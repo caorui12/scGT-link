@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+# Virtual environments
+graph_transformer/
+venv/
+.venv/
+env/
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+# Training outputs & large artifacts
+out_*/
+out_grn*/
+*.pt
+*.npz
+# Data (usually large; remove next line if you want to version data)
+data/
