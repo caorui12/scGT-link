@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Stage 1: Pearson correlation → sparse DGL graph.
+Stage 1: Pearson correlation → sparse DGL graph (``edata['w']`` = Pearson r on each edge; self-loops 1.0).
 Stage 2: GeneExpressionTransformer(expression + lap_pe); GraphTransformer + LinkPredictor.
+         SparseMHA adds learnable-scaled ``w`` to attention logits unless ``--no_edge_weight_attn``.
          Optional gene-symbol embeddings (--gene_bert_emb): ``--gene_bert_fusion additive`` (default)
          adds semantics inside GraphTransformer; ``link_concat`` fuses projected BioBERT only at the
          link head as ``[h_i,h_j,sem_i,sem_j]`` (GT uses expression + Lap PE only).
@@ -96,9 +97,19 @@ def parse_args():
     p.add_argument("--num_layers", type=int, default=4, help="GeneExpressionTransformer layers")
     p.add_argument("--dim_feedforward", type=int, default=256)
     p.add_argument("--dropout", type=float, default=0.1)
-    p.add_argument("--gt_hidden_dim", type=int, default=80)
+    p.add_argument(
+        "--gt_hidden_dim",
+        type=int,
+        default=80,
+        help="GraphTransformer hidden size; must be divisible by --gt_num_heads",
+    )
     p.add_argument("--gt_num_layers", type=int, default=6)
-    p.add_argument("--gt_num_heads", type=int, default=4)
+    p.add_argument(
+        "--gt_num_heads",
+        type=int,
+        default=4,
+        help="Sparse MHA heads; --gt_hidden_dim %% this must be 0 (e.g. 80/6 is invalid).",
+    )
     p.add_argument("--top_k", type=int, default=20, help="Correlation graph: top-k neighbors per gene")
     p.add_argument("--no_cuda", action="store_true")
     p.add_argument("--seed", type=int, default=42)
@@ -115,6 +126,11 @@ def parse_args():
         default="additive",
         help="additive: BioBERT in GraphTransformer (encoder+PE+sem). link_concat: GT uses expr+PE only; "
         "BioBERT projected features concat at LinkPredictor [h_i,h_j,sem_i,sem_j] (requires --gene_bert_emb).",
+    )
+    p.add_argument(
+        "--no_edge_weight_attn",
+        action="store_true",
+        help="Disable Pearson edge weights in SparseMHA (ablation). Default: add learnable-scaled r_ij to logits.",
     )
     p.add_argument(
         "--test_prob_threshold",
@@ -226,6 +242,15 @@ def compute_test_metrics(
 
 def main():
     args = parse_args()
+    if args.d_model % args.nhead != 0:
+        raise SystemExit(
+            f"--d_model ({args.d_model}) must be divisible by --nhead ({args.nhead})"
+        )
+    if args.gt_hidden_dim % args.gt_num_heads != 0:
+        raise SystemExit(
+            f"--gt_hidden_dim ({args.gt_hidden_dim}) must be divisible by --gt_num_heads "
+            f"({args.gt_num_heads}); e.g. use --gt_hidden_dim 84 or --gt_num_heads 5 with 80."
+        )
     set_seed(args.seed)
     device = torch.device("cpu" if args.no_cuda or not torch.cuda.is_available() else "cuda")
 
@@ -283,8 +308,13 @@ def main():
         dim_feedforward=args.dim_feedforward,
         dropout=args.dropout,
     ).to(device)
+    use_edge_w = not args.no_edge_weight_attn
     gt_model = GraphTransformer(
-        in_dim, args.gt_hidden_dim, args.gt_num_heads, args.gt_num_layers
+        in_dim,
+        args.gt_hidden_dim,
+        args.gt_num_heads,
+        args.gt_num_layers,
+        use_edge_weight_attn=use_edge_w,
     ).to(device)
     predictor = LinkPredictor(
         args.gt_hidden_dim, semantic_dim=in_dim if use_link_concat else None
@@ -325,6 +355,7 @@ def main():
             if bert_dim
             else " | bert_fusion=n/a"
         )
+        + f" | edge_weight_attn={'on' if use_edge_w else 'off'}"
     )
     print("-" * 72)
 
@@ -411,6 +442,7 @@ def main():
                     "use_gene_bert": bool(bert_proj is not None),
                     "bert_dim": bert_dim,
                     "gene_bert_fusion": args.gene_bert_fusion,
+                    "use_edge_weight_attn": use_edge_w,
                 },
             }
             if bert_proj is not None:

@@ -23,14 +23,16 @@ def build_correlation_graph(
     if g_n < 2:
         raise ValueError("Need at least 2 genes for correlation graph.")
 
-    r = np.corrcoef(z)
-    np.nan_to_num(r, copy=False, nan=0.0)
-    np.fill_diagonal(r, 0.0)
+    r_full = np.corrcoef(z)
+    np.nan_to_num(r_full, copy=False, nan=0.0)
+    # Selection uses off-diagonal only; keep r_full for edge weights (Pearson r_ij).
+    r_sel = r_full.copy()
+    np.fill_diagonal(r_sel, 0.0)
 
     k_eff = min(top_k, g_n - 1)
     pairs: Set[Tuple[int, int]] = set()
     for i in range(g_n):
-        abs_row = np.abs(r[i]).copy()
+        abs_row = np.abs(r_sel[i]).copy()
         abs_row[i] = -np.inf
         if k_eff <= 0:
             break
@@ -57,4 +59,10 @@ def build_correlation_graph(
     dst = torch.tensor([p[1] for p in pairs], dtype=torch.int64)
     g = dgl.graph((src, dst), num_nodes=g_n)
     g = dgl.to_simple(g)
+    # Pearson on each directed edge; self-loops use 1.0 (diagonal was cleared in r_sel).
+    esrc, edst = g.edges()
+    s = esrc.cpu().numpy()
+    d = edst.cpu().numpy()
+    w = np.where(s == d, 1.0, r_full[s, d]).astype(np.float32)
+    g.edata["w"] = torch.from_numpy(w)
     return g

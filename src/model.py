@@ -13,10 +13,16 @@ os.environ['DGLBACKEND'] = 'pytorch'
 
 # sparse attention module (without dgl.sparse)
 class SparseMHA(nn.Module):
-    def __init__(self,hidden_dim=80,num_heads=8):
+    def __init__(
+        self,
+        hidden_dim=80,
+        num_heads=8,
+        use_edge_weight_bias: bool = True,
+    ):
         super().__init__()
         self.hidden_dim=hidden_dim
         self.num_heads=num_heads
+        self.use_edge_weight_bias = use_edge_weight_bias
 
         self.linear_q=nn.Linear(hidden_dim,hidden_dim)
         self.linear_k=nn.Linear(hidden_dim,hidden_dim)
@@ -24,6 +30,10 @@ class SparseMHA(nn.Module):
 
         # projection of output
         self.out_proj=nn.Linear(hidden_dim,hidden_dim)
+
+        if use_edge_weight_bias:
+            # Add Pearson r_ij (from g.edata['w']) to attention logits before softmax.
+            self.edge_logit_scale = nn.Parameter(torch.tensor(1.0))
 
     def forward(self,g,h):
         # g: DGL graph, h: [N,hidden_dim]
@@ -43,6 +53,13 @@ class SparseMHA(nn.Module):
         edge_q = q[src]  # [E,dh,nh]
         edge_k = k[dst]  # [E,dh,nh]
         edge_attention = torch.sum(edge_q * edge_k, dim=1)  # [E,nh]
+        if (
+            self.use_edge_weight_bias
+            and "w" in g.edata
+            and hasattr(self, "edge_logit_scale")
+        ):
+            w = g.edata["w"].to(device=device, dtype=edge_attention.dtype)
+            edge_attention = edge_attention + self.edge_logit_scale * w.unsqueeze(-1)
 
         # Compute attention weights per source node
         # We need to softmax over neighbors for each source node
@@ -80,10 +97,12 @@ class SparseMHA(nn.Module):
 
 
 class GTLayer(nn.Module):
-    def __init__(self,hidden_dim=80,num_heads=8):
+    def __init__(self, hidden_dim=80, num_heads=8, use_edge_weight_bias: bool = True):
         super().__init__()
 
-        self.attention=SparseMHA(hidden_dim,num_heads)
+        self.attention = SparseMHA(
+            hidden_dim, num_heads, use_edge_weight_bias=use_edge_weight_bias
+        )
         self.hidden_dim=hidden_dim
         self.num_heads=num_heads
 
@@ -105,7 +124,14 @@ class GTLayer(nn.Module):
 
 
 class GraphTransformer(nn.Module):
-    def __init__(self, in_dim ,hidden_dim, num_heads, num_layers):
+    def __init__(
+        self,
+        in_dim,
+        hidden_dim,
+        num_heads,
+        num_layers,
+        use_edge_weight_attn: bool = True,
+    ):
         super().__init__()
 
         self.encoder = nn.Linear(in_dim, hidden_dim)
@@ -117,7 +143,14 @@ class GraphTransformer(nn.Module):
 
         # stack graph transformer layers
         self.layers=nn.ModuleList(
-            [GTLayer(hidden_dim,num_heads) for _ in range(num_layers)]
+            [
+                GTLayer(
+                    hidden_dim,
+                    num_heads,
+                    use_edge_weight_bias=use_edge_weight_attn,
+                )
+                for _ in range(num_layers)
+            ]
         )
 
     def forward(self, g, X, pos_enc, semantic_feat, use_semantic: bool = True):
