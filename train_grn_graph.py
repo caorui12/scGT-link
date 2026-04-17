@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Stage 1: Pearson correlation → sparse DGL graph (``edata['w']`` = Pearson r on each edge; self-loops 1.0).
+Stage 1: Prior graph — ``--prior_graph correlation`` (default): Pearson top-k; ``grnboost2``: arboreto GRNBoost2
+         (needs TF list via ``--tf_genes_file`` or ``data_dir/BL--TFs.txt`` or TF indices in splits).
+         ``edata['w']``: Pearson r, or min–max normalized GRNBoost importance; self-loops 1.0.
 Stage 2: GeneExpressionTransformer(expression + lap_pe); GraphTransformer + LinkPredictor.
          SparseMHA adds learnable-scaled ``w`` to attention logits unless ``--no_edge_weight_attn``.
          Optional gene-symbol embeddings (--gene_bert_emb): ``--gene_bert_fusion additive`` (default)
@@ -67,6 +69,7 @@ from model import GraphTransformer  # noqa: E402
 from utils import LinkPredictor, evaluate  # noqa: E402
 
 from correlation_graph import build_correlation_graph  # noqa: E402
+from grnboost2_graph import build_grnboost2_graph, resolve_tf_gene_names  # noqa: E402
 from grn_data import load_edge_split, load_expression_for_grn, load_gene_bert_embeddings  # noqa: E402
 from grn_model import GeneExpressionTransformer  # noqa: E402
 
@@ -110,7 +113,33 @@ def parse_args():
         default=4,
         help="Sparse MHA heads; --gt_hidden_dim %% this must be 0 (e.g. 80/6 is invalid).",
     )
-    p.add_argument("--top_k", type=int, default=20, help="Correlation graph: top-k neighbors per gene")
+    p.add_argument("--top_k", type=int, default=20, help="Prior graph: top-k (Pearson neighbors or GRNBoost2 incoming/target)")
+    p.add_argument(
+        "--prior_graph",
+        type=str,
+        choices=("correlation", "grnboost2"),
+        default="correlation",
+        help="correlation: Pearson |grn| top-k. grnboost2: arboreto GRNBoost2 (not GENIE3); requires TF names.",
+    )
+    p.add_argument(
+        "--tf_genes_file",
+        type=str,
+        default="",
+        help="Optional text file: one TF gene symbol per line (for prior_graph=grnboost2). "
+        "If empty, tries data_dir/BL--TFs.txt then TF indices from split CSVs.",
+    )
+    p.add_argument(
+        "--grnboost2_limit",
+        type=int,
+        default=None,
+        help="After inferring all links, keep at most this many rows (global, by importance) before per-target top_k.",
+    )
+    p.add_argument(
+        "--grnboost2_n_estimators",
+        type=int,
+        default=500,
+        help="GradientBoostingRegressor n_estimators per target (arboreto SGBM default is 5000; lower=faster).",
+    )
     p.add_argument("--no_cuda", action="store_true")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
@@ -130,7 +159,8 @@ def parse_args():
     p.add_argument(
         "--no_edge_weight_attn",
         action="store_true",
-        help="Disable Pearson edge weights in SparseMHA (ablation). Default: add learnable-scaled r_ij to logits.",
+        help="Disable edge importance in SparseMHA (ablation). Default: add learnable-scaled edata['w'] to logits "
+        "(Pearson r or GRNBoost-normalized importance).",
     )
     p.add_argument(
         "--test_prob_threshold",
@@ -274,7 +304,28 @@ def main():
     test_ei, test_y = test_ei.to(device), test_y.to(device)
 
     in_dim = args.d_model
-    g = build_correlation_graph(gene_expr.detach().cpu(), top_k=args.top_k)
+    expr_cpu = gene_expr.detach().cpu()
+    if args.prior_graph == "correlation":
+        g = build_correlation_graph(expr_cpu, top_k=args.top_k)
+    else:
+        try:
+            tf_names = resolve_tf_gene_names(
+                data_dir,
+                split_dir,
+                gene_names,
+                args.tf_genes_file.strip() or None,
+            )
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
+        g = build_grnboost2_graph(
+            expr_cpu,
+            gene_names,
+            tf_names,
+            top_k=args.top_k,
+            seed=args.seed,
+            grnboost2_limit=args.grnboost2_limit,
+            n_estimators=args.grnboost2_n_estimators,
+        )
     g = g.to(device)
     with torch.no_grad():
         pe = dgl.lap_pe(g, k=in_dim, padding=True)
@@ -347,7 +398,7 @@ def main():
 
     n_edges_graph = g.num_edges()
     print(
-        f"Genes={n_genes} cells={n_cells} | corr graph edges={n_edges_graph} | "
+        f"Genes={n_genes} cells={n_cells} | prior={args.prior_graph} edges={n_edges_graph} | "
         f"train edges={n_train} (pos={int(n_pos)} neg={int(n_neg)}) | pos_weight={pos_weight.item():.3f}"
         + (f" | gene_bert_emb D={bert_dim}" if bert_dim else " | gene_bert_emb (none)")
         + (
@@ -443,6 +494,9 @@ def main():
                     "bert_dim": bert_dim,
                     "gene_bert_fusion": args.gene_bert_fusion,
                     "use_edge_weight_attn": use_edge_w,
+                    "prior_graph": args.prior_graph,
+                    "grnboost2_limit": args.grnboost2_limit,
+                    "grnboost2_n_estimators": args.grnboost2_n_estimators,
                 },
             }
             if bert_proj is not None:

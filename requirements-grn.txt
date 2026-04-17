@@ -10,3 +10,8 @@ scikit-learn
 
 # Optional: scripts/encode_gene_symbols.py (gene symbol embeddings)
 # transformers>=4.36
+
+# Optional: prior_graph=grnboost2 (train_grn_graph.py)
+# arboreto
+# dask
+# distributed
