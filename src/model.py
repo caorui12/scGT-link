@@ -120,13 +120,12 @@ class GraphTransformer(nn.Module):
             [GTLayer(hidden_dim,num_heads) for _ in range(num_layers)]
         )
 
-    def forward(self, g, X, pos_enc, semantic_feat):
-        # semantic_feat: (N, in_dim); use zeros when no BioBERT (bias-only contribution from semantic_linear)
-        h = (
-            self.encoder(X)
-            + self.pos_linear(pos_enc)
-            + self.semantic_linear(semantic_feat)
-        )
+    def forward(self, g, X, pos_enc, semantic_feat, use_semantic: bool = True):
+        # semantic_feat: (N, in_dim). If use_semantic is False, skip BioBERT branch in GT
+        # (for link_concat fusion: semantics go to LinkPredictor only).
+        h = self.encoder(X) + self.pos_linear(pos_enc)
+        if use_semantic:
+            h = h + self.semantic_linear(semantic_feat)
 
         for layer in self.layers:
             h=layer(g,h)

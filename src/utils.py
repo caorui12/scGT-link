@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 import dgl
@@ -10,18 +12,26 @@ from sklearn.metrics import auc
 
 # --- Link Prediction Decoder ---
 class LinkPredictor(nn.Module):
-    def __init__(self, hidden_dim):
+    def __init__(self, hidden_dim, semantic_dim: int | None = None):
         super().__init__()
+        # semantic_dim set → concat [h_src, h_dst, sem_src, sem_dst] (method 2: link-level fusion)
+        self.semantic_dim = semantic_dim
+        in_dim = 2 * hidden_dim + (2 * semantic_dim if semantic_dim else 0)
         self.decoder = nn.Sequential(
-            nn.Linear(2 * hidden_dim, hidden_dim),
+            nn.Linear(in_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
         )
 
-    def forward(self, z, edge_index):
+    def forward(self, z, edge_index, sem: torch.Tensor | None = None):
         src = z[edge_index[0]]
         dst = z[edge_index[1]]
-        x = torch.cat([src, dst], dim=1)
+        if self.semantic_dim and sem is not None:
+            s_src = sem[edge_index[0]]
+            s_dst = sem[edge_index[1]]
+            x = torch.cat([src, dst, s_src, s_dst], dim=1)
+        else:
+            x = torch.cat([src, dst], dim=1)
         x = self.decoder(x)
         return x
 
@@ -33,9 +43,15 @@ def train_link_prediction(model, predictor, graph, pos_edges, neg_edges, optimiz
     optimizer.zero_grad()
 
 
-    h = model(graph, graph.ndata['feat'], graph.ndata['PE'], graph.ndata['semantic'])
-    pos_logits = predictor(h, pos_edges)
-    neg_logits = predictor(h, neg_edges)
+    h = model(
+        graph,
+        graph.ndata["feat"],
+        graph.ndata["PE"],
+        graph.ndata["semantic"],
+        True,
+    )
+    pos_logits = predictor(h, pos_edges, None)
+    neg_logits = predictor(h, neg_edges, None)
     pos_labels = torch.ones_like(pos_logits)
     neg_labels = torch.zeros_like(neg_logits)
 
@@ -44,14 +60,28 @@ def train_link_prediction(model, predictor, graph, pos_edges, neg_edges, optimiz
     optimizer.step()
     return loss.item(), h
 
-def evaluate(model, predictor, graph, pos_edges, neg_edges):
+def evaluate(
+    model,
+    predictor,
+    graph,
+    pos_edges,
+    neg_edges,
+    use_semantic_gt: bool = True,
+    sem_link: torch.Tensor | None = None,
+):
     model.eval()
     predictor.eval()
 
     with torch.no_grad():
-        h = model(graph, graph.ndata['feat'], graph.ndata['PE'], graph.ndata['semantic'])
-        pos_logits = predictor(h, pos_edges)
-        neg_logits = predictor(h, neg_edges)
+        h = model(
+            graph,
+            graph.ndata["feat"],
+            graph.ndata["PE"],
+            graph.ndata["semantic"],
+            use_semantic_gt,
+        )
+        pos_logits = predictor(h, pos_edges, sem_link)
+        neg_logits = predictor(h, neg_edges, sem_link)
 
     logits = torch.cat([pos_logits, neg_logits])
 

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 Stage 1: Pearson correlation → sparse DGL graph.
-Stage 2: GeneExpressionTransformer(expression + lap_pe); GraphTransformer(X, PE, semantic_feat) + LinkPredictor.
-         Optional semantic_feat from precomputed gene-symbol embeddings (--gene_bert_emb).
+Stage 2: GeneExpressionTransformer(expression + lap_pe); GraphTransformer + LinkPredictor.
+         Optional gene-symbol embeddings (--gene_bert_emb): ``--gene_bert_fusion additive`` (default)
+         adds semantics inside GraphTransformer; ``link_concat`` fuses projected BioBERT only at the
+         link head as ``[h_i,h_j,sem_i,sem_j]`` (GT uses expression + Lap PE only).
 
 Example (from this repo root; ``src/`` holds GraphTransformer + LinkPredictor, no PYTHONPATH needed):
   python train_grn_graph.py \\
@@ -107,6 +109,14 @@ def parse_args():
         help="Path to .pt from scripts/encode_gene_symbols.py (empty = zero semantic, ablation baseline)",
     )
     p.add_argument(
+        "--gene_bert_fusion",
+        type=str,
+        choices=("additive", "link_concat"),
+        default="additive",
+        help="additive: BioBERT in GraphTransformer (encoder+PE+sem). link_concat: GT uses expr+PE only; "
+        "BioBERT projected features concat at LinkPredictor [h_i,h_j,sem_i,sem_j] (requires --gene_bert_emb).",
+    )
+    p.add_argument(
         "--test_prob_threshold",
         type=float,
         default=0.5,
@@ -137,6 +147,7 @@ def logits_all_edges(
     gene_bert_raw: Optional[torch.Tensor],
     bert_proj: Optional[nn.Module],
     in_dim: int,
+    gene_bert_fusion: str,
 ) -> torch.Tensor:
     seq_model.eval()
     gt_model.eval()
@@ -145,15 +156,23 @@ def logits_all_edges(
     sem = semantic_features(
         n_genes, in_dim, gene_expr.device, gene_expr.dtype, gene_bert_raw, bert_proj
     )
+    use_semantic_gt = not (
+        gene_bert_fusion == "link_concat" and bert_proj is not None
+    )
+    sem_for_pred = (
+        sem if gene_bert_fusion == "link_concat" and bert_proj is not None else None
+    )
     h_seq = seq_model(gene_expr, pe)
     g.ndata["feat"] = h_seq
     g.ndata["PE"] = pe
     g.ndata["semantic"] = sem
-    h = gt_model(g, h_seq, pe, sem)
+    h = gt_model(g, h_seq, pe, sem, use_semantic_gt)
     outs = []
     e = edge_index.size(1)
     for s in range(0, e, chunk):
-        outs.append(predictor(h, edge_index[:, s : s + chunk]).squeeze(-1))
+        outs.append(
+            predictor(h, edge_index[:, s : s + chunk], sem_for_pred).squeeze(-1)
+        )
     return torch.cat(outs, dim=0)
 
 
@@ -249,6 +268,13 @@ def main():
         gene_bert_raw = raw_cpu.to(device=device, dtype=gene_expr.dtype)
         bert_proj = nn.Linear(bert_dim, in_dim).to(device)
 
+    use_link_concat = args.gene_bert_fusion == "link_concat" and bert_proj is not None
+    if args.gene_bert_fusion == "link_concat" and bert_proj is None:
+        print(
+            "Note: --gene_bert_fusion=link_concat needs --gene_bert_emb; using additive fusion.",
+            flush=True,
+        )
+
     seq_model = GeneExpressionTransformer(
         n_cells=n_cells,
         d_model=in_dim,
@@ -260,7 +286,9 @@ def main():
     gt_model = GraphTransformer(
         in_dim, args.gt_hidden_dim, args.gt_num_heads, args.gt_num_layers
     ).to(device)
-    predictor = LinkPredictor(args.gt_hidden_dim).to(device)
+    predictor = LinkPredictor(
+        args.gt_hidden_dim, semantic_dim=in_dim if use_link_concat else None
+    ).to(device)
 
     n_pos = float((train_y == 1).sum().item())
     n_neg = float((train_y == 0).sum().item())
@@ -292,6 +320,11 @@ def main():
         f"Genes={n_genes} cells={n_cells} | corr graph edges={n_edges_graph} | "
         f"train edges={n_train} (pos={int(n_pos)} neg={int(n_neg)}) | pos_weight={pos_weight.item():.3f}"
         + (f" | gene_bert_emb D={bert_dim}" if bert_dim else " | gene_bert_emb (none)")
+        + (
+            f" | bert_fusion={args.gene_bert_fusion}"
+            if bert_dim
+            else " | bert_fusion=n/a"
+        )
     )
     print("-" * 72)
 
@@ -316,8 +349,8 @@ def main():
                 n_genes, in_dim, device, gene_expr.dtype, gene_bert_raw, bert_proj
             )
             h_seq = seq_model(gene_expr, pe)
-            h = gt_model(g, h_seq, pe, sem)
-            logits = predictor(h, ei).squeeze(-1)
+            h = gt_model(g, h_seq, pe, sem, not use_link_concat)
+            logits = predictor(h, ei, sem if use_link_concat else None).squeeze(-1)
             loss = loss_fn(logits, y)
             loss.backward()
             opt.step()
@@ -337,7 +370,15 @@ def main():
         g.ndata["feat"] = h_seq
         g.ndata["PE"] = pe
         g.ndata["semantic"] = sem
-        v_auroc, v_ap, _, _ = evaluate(gt_model, predictor, g, val_pos, val_neg)
+        v_auroc, v_ap, _, _ = evaluate(
+            gt_model,
+            predictor,
+            g,
+            val_pos,
+            val_neg,
+            use_semantic_gt=not use_link_concat,
+            sem_link=sem if use_link_concat else None,
+        )
         seq_model.train()
         gt_model.train()
         predictor.train()
@@ -369,6 +410,7 @@ def main():
                     "n_edges_graph": int(n_edges_graph),
                     "use_gene_bert": bool(bert_proj is not None),
                     "bert_dim": bert_dim,
+                    "gene_bert_fusion": args.gene_bert_fusion,
                 },
             }
             if bert_proj is not None:
@@ -382,10 +424,16 @@ def main():
             )
 
     ckpt = torch.load(out_dir / "best.pt", map_location=device)
+    meta = ckpt.get("meta", {})
+    fusion_saved = meta.get("gene_bert_fusion", "additive")
+    use_link_concat_eval = fusion_saved == "link_concat" and "bert_proj" in ckpt
+    predictor = LinkPredictor(
+        int(meta.get("gt_hidden_dim", args.gt_hidden_dim)),
+        semantic_dim=in_dim if use_link_concat_eval else None,
+    ).to(device)
     seq_model.load_state_dict(ckpt["seq_model"])
     gt_model.load_state_dict(ckpt["gt_model"])
     predictor.load_state_dict(ckpt["predictor"])
-    meta = ckpt.get("meta", {})
     if "bert_proj" in ckpt:
         bd = meta.get("bert_dim")
         if bd is None:
@@ -416,6 +464,7 @@ def main():
         gene_bert_raw,
         bert_proj,
         in_dim,
+        fusion_saved,
     )
     test_metrics = compute_test_metrics(
         test_y.cpu().numpy(),
