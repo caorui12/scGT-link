@@ -3,6 +3,8 @@
 Stage 1: Prior graph — ``--prior_graph correlation`` (default): Pearson top-k; ``grnboost2``: arboreto GRNBoost2
          (needs TF list via ``--tf_genes_file`` or ``data_dir/BL--TFs.txt`` or TF indices in splits).
          ``edata['w']``: Pearson r, or min–max normalized GRNBoost importance; self-loops 1.0.
+         For ``prior_graph=grnboost2``, ``edata['dir']`` is +1 on TF→target edges and −1 on mirrored edges
+         (unless ``--no_edge_dir_attn``); SparseMHA adds ``edge_dir_scale * dir`` to logits.
 Stage 2: GeneExpressionTransformer(expression + lap_pe); GraphTransformer + LinkPredictor.
          SparseMHA adds learnable-scaled ``w`` to attention logits unless ``--no_edge_weight_attn``.
          Optional gene-symbol embeddings (--gene_bert_emb): ``--gene_bert_fusion additive`` (default)
@@ -161,6 +163,12 @@ def parse_args():
         action="store_true",
         help="Disable edge importance in SparseMHA (ablation). Default: add learnable-scaled edata['w'] to logits "
         "(Pearson r or GRNBoost-normalized importance).",
+    )
+    p.add_argument(
+        "--no_edge_dir_attn",
+        action="store_true",
+        help="For prior_graph=grnboost2: do not add learnable edata['dir'] (±1) bias in SparseMHA. "
+        "Ignored for correlation prior (no dir field).",
     )
     p.add_argument(
         "--test_prob_threshold",
@@ -360,12 +368,14 @@ def main():
         dropout=args.dropout,
     ).to(device)
     use_edge_w = not args.no_edge_weight_attn
+    use_dir_attn = args.prior_graph == "grnboost2" and not args.no_edge_dir_attn
     gt_model = GraphTransformer(
         in_dim,
         args.gt_hidden_dim,
         args.gt_num_heads,
         args.gt_num_layers,
         use_edge_weight_attn=use_edge_w,
+        use_directed_edge_bias=use_dir_attn,
     ).to(device)
     predictor = LinkPredictor(
         args.gt_hidden_dim, semantic_dim=in_dim if use_link_concat else None
@@ -407,6 +417,11 @@ def main():
             else " | bert_fusion=n/a"
         )
         + f" | edge_weight_attn={'on' if use_edge_w else 'off'}"
+        + (
+            f" | edge_dir_attn={'on' if use_dir_attn else 'off'}"
+            if args.prior_graph == "grnboost2"
+            else ""
+        )
     )
     print("-" * 72)
 
@@ -497,6 +512,7 @@ def main():
                     "prior_graph": args.prior_graph,
                     "grnboost2_limit": args.grnboost2_limit,
                     "grnboost2_n_estimators": args.grnboost2_n_estimators,
+                    "use_directed_edge_attn": use_dir_attn,
                 },
             }
             if bert_proj is not None:
@@ -513,9 +529,19 @@ def main():
     meta = ckpt.get("meta", {})
     fusion_saved = meta.get("gene_bert_fusion", "additive")
     use_link_concat_eval = fusion_saved == "link_concat" and "bert_proj" in ckpt
+    use_dir_eval = meta.get("use_directed_edge_attn", False)
+    use_ew_eval = meta.get("use_edge_weight_attn", True)
     predictor = LinkPredictor(
         int(meta.get("gt_hidden_dim", args.gt_hidden_dim)),
         semantic_dim=in_dim if use_link_concat_eval else None,
+    ).to(device)
+    gt_model = GraphTransformer(
+        in_dim,
+        int(meta.get("gt_hidden_dim", args.gt_hidden_dim)),
+        args.gt_num_heads,
+        int(meta.get("gt_num_layers", args.gt_num_layers)),
+        use_edge_weight_attn=use_ew_eval,
+        use_directed_edge_bias=use_dir_eval,
     ).to(device)
     seq_model.load_state_dict(ckpt["seq_model"])
     gt_model.load_state_dict(ckpt["gt_model"])

@@ -18,11 +18,13 @@ class SparseMHA(nn.Module):
         hidden_dim=80,
         num_heads=8,
         use_edge_weight_bias: bool = True,
+        use_directed_edge_bias: bool = False,
     ):
         super().__init__()
         self.hidden_dim=hidden_dim
         self.num_heads=num_heads
         self.use_edge_weight_bias = use_edge_weight_bias
+        self.use_directed_edge_bias = use_directed_edge_bias
 
         self.linear_q=nn.Linear(hidden_dim,hidden_dim)
         self.linear_k=nn.Linear(hidden_dim,hidden_dim)
@@ -34,6 +36,9 @@ class SparseMHA(nn.Module):
         if use_edge_weight_bias:
             # Add Pearson r_ij (from g.edata['w']) to attention logits before softmax.
             self.edge_logit_scale = nn.Parameter(torch.tensor(1.0))
+        if use_directed_edge_bias:
+            # GRNBoost2: g.edata['dir'] = +1 on TF→target, −1 on mirrored target→TF; 0 on self-loops.
+            self.edge_dir_scale = nn.Parameter(torch.tensor(1.0))
 
     def forward(self,g,h):
         # g: DGL graph, h: [N,hidden_dim]
@@ -60,6 +65,13 @@ class SparseMHA(nn.Module):
         ):
             w = g.edata["w"].to(device=device, dtype=edge_attention.dtype)
             edge_attention = edge_attention + self.edge_logit_scale * w.unsqueeze(-1)
+        if (
+            self.use_directed_edge_bias
+            and "dir" in g.edata
+            and hasattr(self, "edge_dir_scale")
+        ):
+            ddir = g.edata["dir"].to(device=device, dtype=edge_attention.dtype)
+            edge_attention = edge_attention + self.edge_dir_scale * ddir.unsqueeze(-1)
 
         # Compute attention weights per source node
         # We need to softmax over neighbors for each source node
@@ -97,11 +109,20 @@ class SparseMHA(nn.Module):
 
 
 class GTLayer(nn.Module):
-    def __init__(self, hidden_dim=80, num_heads=8, use_edge_weight_bias: bool = True):
+    def __init__(
+        self,
+        hidden_dim=80,
+        num_heads=8,
+        use_edge_weight_bias: bool = True,
+        use_directed_edge_bias: bool = False,
+    ):
         super().__init__()
 
         self.attention = SparseMHA(
-            hidden_dim, num_heads, use_edge_weight_bias=use_edge_weight_bias
+            hidden_dim,
+            num_heads,
+            use_edge_weight_bias=use_edge_weight_bias,
+            use_directed_edge_bias=use_directed_edge_bias,
         )
         self.hidden_dim=hidden_dim
         self.num_heads=num_heads
@@ -131,6 +152,7 @@ class GraphTransformer(nn.Module):
         num_heads,
         num_layers,
         use_edge_weight_attn: bool = True,
+        use_directed_edge_bias: bool = False,
     ):
         super().__init__()
 
@@ -148,6 +170,7 @@ class GraphTransformer(nn.Module):
                     hidden_dim,
                     num_heads,
                     use_edge_weight_bias=use_edge_weight_attn,
+                    use_directed_edge_bias=use_directed_edge_bias,
                 )
                 for _ in range(num_layers)
             ]

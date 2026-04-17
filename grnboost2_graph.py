@@ -169,11 +169,15 @@ def build_grnboost2_graph(
     else:
         norm = ((imps - lo) / (hi - lo)).astype(np.float32)
 
+    # Bidirectional edges for message passing; ``dir``: +1 on TF→target, −1 on mirrored edge (explicit directed prior).
     pairs_w: dict[Tuple[int, int], float] = {}
+    pairs_dir: dict[Tuple[int, int], float] = {}
     for (i, j, _), nw in zip(triples, norm):
         wij = float(max(nw, 1e-6))
         pairs_w[(i, j)] = max(pairs_w.get((i, j), 0.0), wij)
+        pairs_dir[(i, j)] = 1.0
         pairs_w[(j, i)] = max(pairs_w.get((j, i), 0.0), wij)
+        pairs_dir[(j, i)] = -1.0
 
     pair_set: Set[Tuple[int, int]] = set(pairs_w.keys())
 
@@ -193,10 +197,15 @@ def build_grnboost2_graph(
     s = esrc.cpu().numpy()
     d = edst.cpu().numpy()
     w_list = []
+    dir_list = []
     for a, b in zip(s, d):
-        if a == b:
+        ia, ib = int(a), int(b)
+        if ia == ib:
             w_list.append(1.0)
+            dir_list.append(0.0)
         else:
-            w_list.append(pairs_w.get((int(a), int(b)), 0.5))
+            w_list.append(pairs_w.get((ia, ib), 0.5))
+            dir_list.append(pairs_dir.get((ia, ib), 0.0))
     g.edata["w"] = torch.tensor(w_list, dtype=torch.float32)
+    g.edata["dir"] = torch.tensor(dir_list, dtype=torch.float32)
     return g
