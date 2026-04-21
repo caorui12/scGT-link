@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Stage 1: Prior graph — ``--prior_graph correlation`` (default): Pearson top-k; ``grnboost2``: arboreto GRNBoost2
+Stage 1: Prior graph — ``correlation``: Pearson top-k; ``grnboost2``: inferred (arboreto); ``gold``: TF/Target edges from ``--gold_network_file``
          (needs TF list via ``--tf_genes_file`` or ``data_dir/BL--TFs.txt`` or TF indices in splits).
          ``edata['w']``: Pearson r, or min–max normalized GRNBoost importance; self-loops 1.0.
          For ``prior_graph=grnboost2``, ``edata['dir']`` is +1 on TF→target edges and −1 on mirrored edges
@@ -81,6 +81,7 @@ from model import GraphTransformer  # noqa: E402
 from utils import LinkPredictor, evaluate  # noqa: E402
 
 from correlation_graph import build_correlation_graph  # noqa: E402
+from gold_network_graph import build_gold_network_graph  # noqa: E402
 from grnboost2_graph import build_grnboost2_graph, resolve_tf_gene_names  # noqa: E402
 from grn_data import load_edge_split, load_expression_for_grn, load_gene_bert_embeddings  # noqa: E402
 from grn_model import (  # noqa: E402
@@ -210,9 +211,21 @@ def parse_args(argv: Optional[list[str]] = None):
     p.add_argument(
         "--prior_graph",
         type=str,
-        choices=("correlation", "grnboost2"),
+        choices=("correlation", "grnboost2", "gold"),
         default="correlation",
-        help="correlation: Pearson |grn| top-k. grnboost2: arboreto GRNBoost2 (not GENIE3); requires TF names.",
+        help="correlation: Pearson |grn| top-k. grnboost2: inferred prior (arboreto). "
+        "gold: reference network from --gold_network_file (TF→target edges, optional weights).",
+    )
+    p.add_argument(
+        "--gold_network_file",
+        type=str,
+        default="",
+        help="prior_graph=gold: CSV with TF and Target columns (gene indices or symbols; optional weight/importance).",
+    )
+    p.add_argument(
+        "--gold_network_gene_symbols",
+        action="store_true",
+        help="prior_graph=gold: parse TF/Target only as gene symbols (do not interpret integers as indices).",
     )
     p.add_argument(
         "--tf_genes_file",
@@ -259,7 +272,7 @@ def parse_args(argv: Optional[list[str]] = None):
     p.add_argument(
         "--no_edge_dir_attn",
         action="store_true",
-        help="For prior_graph=grnboost2: do not add learnable edata['dir'] (±1) bias in SparseMHA. "
+        help="For prior_graph=grnboost2 or gold: do not add learnable edata['dir'] (±1) bias in SparseMHA. "
         "Ignored for correlation prior (no dir field).",
     )
     p.add_argument(
@@ -417,6 +430,19 @@ def run_training(args: Namespace) -> dict:
     expr_cpu = gene_expr.detach().cpu()
     if args.prior_graph == "correlation":
         g = build_correlation_graph(expr_cpu, top_k=args.top_k)
+    elif args.prior_graph == "gold":
+        if not args.gold_network_file.strip():
+            raise SystemExit(
+                "prior_graph=gold requires --gold_network_file path/to.csv (TF, Target; optional weight)."
+            )
+        try:
+            g = build_gold_network_graph(
+                Path(args.gold_network_file.strip()),
+                gene_names,
+                force_gene_symbols=args.gold_network_gene_symbols,
+            )
+        except (FileNotFoundError, ValueError, RuntimeError) as e:
+            raise SystemExit(str(e)) from e
     else:
         try:
             tf_names = resolve_tf_gene_names(
@@ -508,7 +534,7 @@ def run_training(args: Namespace) -> dict:
             dropout=args.dropout,
         ).to(device)
     use_edge_w = not args.no_edge_weight_attn
-    use_dir_attn = args.prior_graph == "grnboost2" and not args.no_edge_dir_attn
+    use_dir_attn = args.prior_graph in ("grnboost2", "gold") and not args.no_edge_dir_attn
     gt_model = GraphTransformer(
         in_dim,
         args.gt_hidden_dim,
@@ -565,7 +591,7 @@ def run_training(args: Namespace) -> dict:
         + f" | edge_weight_attn={'on' if use_edge_w else 'off'}"
         + (
             f" | edge_dir_attn={'on' if use_dir_attn else 'off'}"
-            if args.prior_graph == "grnboost2"
+            if args.prior_graph in ("grnboost2", "gold")
             else ""
         )
     )
@@ -661,6 +687,10 @@ def run_training(args: Namespace) -> dict:
                     "gene_bert_fusion": args.gene_bert_fusion,
                     "use_edge_weight_attn": use_edge_w,
                     "prior_graph": args.prior_graph,
+                    "gold_network_file": str(Path(args.gold_network_file).resolve())
+                    if args.prior_graph == "gold" and args.gold_network_file.strip()
+                    else "",
+                    "gold_network_gene_symbols": bool(args.gold_network_gene_symbols),
                     "grnboost2_limit": args.grnboost2_limit,
                     "grnboost2_n_estimators": args.grnboost2_n_estimators,
                     "use_directed_edge_attn": use_dir_attn,
