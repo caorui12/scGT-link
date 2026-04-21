@@ -6,8 +6,8 @@ Stage 1: Prior graph — ``--prior_graph correlation`` (default): Pearson top-k;
          For ``prior_graph=grnboost2``, ``edata['dir']`` is +1 on TF→target edges and −1 on mirrored edges
          (unless ``--no_edge_dir_attn``); SparseMHA adds ``edge_dir_scale * dir`` to logits.
 Stage 2: Gene encoder + GraphTransformer + LinkPredictor. Default: GeneExpressionTransformer(expression + lap_pe).
-         Use ``--expr_encoder scgpt`` (+ ``--scgpt_emb_pt`` or ``--scgpt_model_dir``) to replace expression encoding
-         with pretrained scGPT gene token embeddings (see scripts/precompute_scgpt_gene_emb.py).
+         Use ``--expr_encoder scgpt`` for scGPT-only; ``scgpt_concat`` for expression Transformer + concat(scGPT) + fuse
+         (requires ``--scgpt_emb_pt`` or ``--scgpt_model_dir``; see scripts/precompute_scgpt_gene_emb.py).
          SparseMHA adds learnable-scaled ``w`` to attention logits unless ``--no_edge_weight_attn``.
          Optional gene-symbol embeddings (--gene_bert_emb): ``--gene_bert_fusion additive`` (default)
          adds semantics inside GraphTransformer; ``link_concat`` fuses projected BioBERT only at the
@@ -83,7 +83,11 @@ from utils import LinkPredictor, evaluate  # noqa: E402
 from correlation_graph import build_correlation_graph  # noqa: E402
 from grnboost2_graph import build_grnboost2_graph, resolve_tf_gene_names  # noqa: E402
 from grn_data import load_edge_split, load_expression_for_grn, load_gene_bert_embeddings  # noqa: E402
-from grn_model import GeneExpressionTransformer, ScGPTGeneExpressionEncoder  # noqa: E402
+from grn_model import (  # noqa: E402
+    GeneExpressionTransformer,
+    ScGPTExprConcatEncoder,
+    ScGPTGeneExpressionEncoder,
+)
 from scgpt_loader import (  # noqa: E402
     load_scgpt_emb_from_pt,
     load_scgpt_gene_embedding_matrix,
@@ -145,19 +149,33 @@ def parse_args(argv: Optional[list[str]] = None):
     p.add_argument(
         "--expr_encoder",
         type=str,
-        choices=("transformer", "scgpt"),
+        choices=("transformer", "scgpt", "scgpt_concat"),
         default="transformer",
-        help="transformer: Linear(n_cells)+TransformerEncoder on genes (default). "
-        "scgpt: pretrained scGPT gene token embeddings + Linear to d_model (see --scgpt_*).",
+        help="transformer: Linear(n_cells)+TransformerEncoder (default). "
+        "scgpt: scGPT token emb + proj (+ optional refine). "
+        "scgpt_concat: same expression Transformer as transformer, concat with proj(scGPT), Linear fuse.",
     )
     p.add_argument("--d_model", type=int, default=128, help="GT in_dim = lap_pe k; expression encoder output dim")
-    p.add_argument("--nhead", type=int, default=4, help="GeneExpressionTransformer heads (ignored for expr_encoder=scgpt unless --scgpt_refine_layers>0)")
-    p.add_argument("--num_layers", type=int, default=4, help="GeneExpressionTransformer layers (ignored for expr_encoder=scgpt unless using refine)")
+    p.add_argument(
+        "--nhead",
+        type=int,
+        default=4,
+        help="GeneExpressionTransformer heads (expr_encoder=transformer or scgpt_concat; "
+        "for scgpt only when --scgpt_refine_layers>0)",
+    )
+    p.add_argument(
+        "--num_layers",
+        type=int,
+        default=4,
+        help="GeneExpressionTransformer layers (expr_encoder=transformer or scgpt_concat; "
+        "ignored for plain scgpt unless using refine)",
+    )
     p.add_argument(
         "--scgpt_model_dir",
         type=str,
         default="",
-        help="Directory with args.json, vocab.json, best_model.pt (expr_encoder=scgpt). Ignored if --scgpt_emb_pt is set.",
+        help="Directory with args.json, vocab.json, best_model.pt (expr_encoder=scgpt or scgpt_concat). "
+        "Ignored if --scgpt_emb_pt is set.",
     )
     p.add_argument(
         "--scgpt_emb_pt",
@@ -356,7 +374,7 @@ def compute_test_metrics(
 
 def run_training(args: Namespace) -> dict:
     """Run one training job. ``args`` is an argparse namespace (see :func:`parse_args`). Returns results dict."""
-    if args.expr_encoder == "transformer" and args.d_model % args.nhead != 0:
+    if args.expr_encoder in ("transformer", "scgpt_concat") and args.d_model % args.nhead != 0:
         raise SystemExit(
             f"--d_model ({args.d_model}) must be divisible by --nhead ({args.nhead})"
         )
@@ -444,10 +462,10 @@ def run_training(args: Namespace) -> dict:
         )
 
     scgpt_dim: Optional[int] = None
-    if args.expr_encoder == "scgpt":
+    if args.expr_encoder in ("scgpt", "scgpt_concat"):
         if not args.scgpt_emb_pt.strip() and not args.scgpt_model_dir.strip():
             raise SystemExit(
-                "expr_encoder=scgpt requires --scgpt_emb_pt and/or --scgpt_model_dir "
+                "expr_encoder=scgpt or scgpt_concat requires --scgpt_emb_pt and/or --scgpt_model_dir "
                 "(precomputed .pt or scGPT checkpoint directory)."
             )
         if args.scgpt_emb_pt.strip():
@@ -461,14 +479,25 @@ def run_training(args: Namespace) -> dict:
                 device=torch.device("cpu"),
             )
         scgpt_mat = scgpt_mat_cpu.to(device=device)
-        seq_model = ScGPTGeneExpressionEncoder(
-            scgpt_mat,
-            d_model=in_dim,
-            refine_layers=args.scgpt_refine_layers,
-            refine_nhead=args.scgpt_refine_nhead,
-            dim_feedforward=args.scgpt_refine_dim_feedforward,
-            dropout=args.dropout,
-        ).to(device)
+        if args.expr_encoder == "scgpt_concat":
+            seq_model = ScGPTExprConcatEncoder(
+                scgpt_mat,
+                n_cells=n_cells,
+                d_model=in_dim,
+                nhead=args.nhead,
+                num_layers=args.num_layers,
+                dim_feedforward=args.dim_feedforward,
+                dropout=args.dropout,
+            ).to(device)
+        else:
+            seq_model = ScGPTGeneExpressionEncoder(
+                scgpt_mat,
+                d_model=in_dim,
+                refine_layers=args.scgpt_refine_layers,
+                refine_nhead=args.scgpt_refine_nhead,
+                dim_feedforward=args.scgpt_refine_dim_feedforward,
+                dropout=args.dropout,
+            ).to(device)
     else:
         seq_model = GeneExpressionTransformer(
             n_cells=n_cells,
@@ -522,7 +551,7 @@ def run_training(args: Namespace) -> dict:
         f"Genes={n_genes} cells={n_cells} | expr_encoder={args.expr_encoder}"
         + (
             f" scgpt_dim={scgpt_dim}"
-            if args.expr_encoder == "scgpt" and scgpt_dim is not None
+            if args.expr_encoder in ("scgpt", "scgpt_concat") and scgpt_dim is not None
             else ""
         )
         + f" | prior={args.prior_graph} edges={n_edges_graph} | "
@@ -635,6 +664,9 @@ def run_training(args: Namespace) -> dict:
                     "grnboost2_limit": args.grnboost2_limit,
                     "grnboost2_n_estimators": args.grnboost2_n_estimators,
                     "use_directed_edge_attn": use_dir_attn,
+                    "nhead": args.nhead,
+                    "num_layers": args.num_layers,
+                    "dim_feedforward": args.dim_feedforward,
                 },
             }
             if bert_proj is not None:
@@ -666,8 +698,8 @@ def run_training(args: Namespace) -> dict:
         use_directed_edge_bias=use_dir_eval,
     ).to(device)
     expr_enc_saved = meta.get("expr_encoder", "transformer")
+    sd_seq = ckpt["seq_model"]
     if expr_enc_saved == "scgpt":
-        sd_seq = ckpt["seq_model"]
         if "scgpt_gene_emb" not in sd_seq:
             raise SystemExit("checkpoint meta says expr_encoder=scgpt but seq_model has no scgpt_gene_emb buffer")
         seq_model = ScGPTGeneExpressionEncoder(
@@ -676,6 +708,21 @@ def run_training(args: Namespace) -> dict:
             refine_layers=int(meta.get("scgpt_refine_layers", 0)),
             refine_nhead=int(meta.get("scgpt_refine_nhead", 4)),
             dim_feedforward=int(meta.get("scgpt_refine_dim_feedforward", 256)),
+            dropout=float(args.dropout),
+        ).to(device)
+        seq_model.load_state_dict(sd_seq)
+    elif expr_enc_saved == "scgpt_concat":
+        if "fusion.weight" not in sd_seq or "scgpt_gene_emb" not in sd_seq:
+            raise SystemExit(
+                "checkpoint meta says expr_encoder=scgpt_concat but seq_model missing fusion.* or scgpt_gene_emb"
+            )
+        seq_model = ScGPTExprConcatEncoder(
+            sd_seq["scgpt_gene_emb"].cpu(),
+            n_cells=int(meta.get("n_cells", n_cells)),
+            d_model=int(meta.get("d_model", in_dim)),
+            nhead=int(meta.get("nhead", args.nhead)),
+            num_layers=int(meta.get("num_layers", args.num_layers)),
+            dim_feedforward=int(meta.get("dim_feedforward", args.dim_feedforward)),
             dropout=float(args.dropout),
         ).to(device)
         seq_model.load_state_dict(sd_seq)
@@ -688,7 +735,7 @@ def run_training(args: Namespace) -> dict:
             dim_feedforward=args.dim_feedforward,
             dropout=args.dropout,
         ).to(device)
-        seq_model.load_state_dict(ckpt["seq_model"])
+        seq_model.load_state_dict(sd_seq)
     gt_model.load_state_dict(ckpt["gt_model"])
     predictor.load_state_dict(ckpt["predictor"])
     if "bert_proj" in ckpt:
