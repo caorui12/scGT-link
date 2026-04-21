@@ -220,7 +220,8 @@ def parse_args(argv: Optional[list[str]] = None):
         "--gold_network_file",
         type=str,
         default="",
-        help="prior_graph=gold: CSV with TF and Target columns (gene indices or symbols; optional weight/importance).",
+        help="prior_graph=gold: CSV with TF/Target or Gene1/Gene2 (or Source/Target, etc.); "
+        "see gold_network_graph.build_gold_network_graph.",
     )
     p.add_argument(
         "--gold_network_gene_symbols",

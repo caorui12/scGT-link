@@ -100,6 +100,23 @@ def _resolve_endpoints(
     return ti, tj
 
 
+def _resolve_edge_column_names(col_map: dict[str, str]) -> tuple[str, str]:
+    """Map lowercase keys to actual CSV headers. Accepts TF/Target, Gene1/Gene2, Source/Target, etc."""
+    pairs = (
+        ("tf", "target"),
+        ("gene1", "gene2"),
+        ("source", "target"),
+        ("regulator", "target"),
+    )
+    for a, b in pairs:
+        if a in col_map and b in col_map:
+            return col_map[a], col_map[b]
+    raise ValueError(
+        "Gold network CSV needs endpoint pairs such as (TF, Target) or (Gene1, Gene2); "
+        f"found columns: {list(col_map.values())}"
+    )
+
+
 def build_gold_network_graph(
     path: Path | str,
     gene_names: list[str],
@@ -110,12 +127,15 @@ def build_gold_network_graph(
     """
     Load directed TF→target edges from a CSV file and build the same DGL graph as GRNBoost2-style priors.
 
-    **Columns** (TF / Target matched case-insensitively, e.g. ``TF``, ``tf``, ``Target``):
+    **Endpoint columns** (case-insensitive), first column is the regulator/source, second is the target:
 
-    - Required: TF and Target — either **0-based gene indices** (same as split CSVs) or **gene
-      symbols**; use ``force_gene_symbols=True`` to disable index parsing (symbols only).
-    - Optional: ``weight``, ``importance``, ``Weight``, ``Importance``, or ``w`` — non-negative edge
-      strength; if missing, all edges use weight 1.0 before min–max normalization.
+    - ``TF`` + ``Target``, or ``Gene1`` + ``Gene2``, or ``Source`` + ``Target``, or ``Regulator`` + ``Target``.
+
+    Values can be **0-based gene indices** (as in split CSVs) or **gene symbols** matching
+    ``gene_names``; use ``force_gene_symbols=True`` to disable integer-as-index parsing.
+
+    **Optional weight column:** ``weight``, ``importance``, or ``w`` (case-insensitive). If absent,
+    all edges use weight 1.0 before min–max normalization to ``edata['w']``.
 
     Rows that do not map to two distinct genes in ``gene_names`` are skipped.
     """
@@ -125,20 +145,12 @@ def build_gold_network_graph(
 
     df = pd.read_csv(path)
     col_map = {c.lower(): c for c in df.columns}
-    for need in ("tf", "target"):
-        if need not in col_map:
-            raise ValueError(
-                f"Gold network CSV must contain TF and Target columns; got {list(df.columns)}"
-            )
-    c_tf = col_map["tf"]
-    c_tg = col_map["target"]
-    wcol = None
-    for col in ("weight", "importance", "Weight", "Importance", "w"):
-        if col in df.columns:
-            wcol = df[col].astype(np.float64).values
+    c_tf, c_tg = _resolve_edge_column_names(col_map)
+    wcol = np.ones(len(df), dtype=np.float64)
+    for key in ("weight", "importance", "w"):
+        if key in col_map:
+            wcol = df[col_map[key]].astype(np.float64).values
             break
-    if wcol is None:
-        wcol = np.ones(len(df), dtype=np.float64)
 
     gene_to_idx: dict[str, int] = {}
     for i, g in enumerate(gene_names):
