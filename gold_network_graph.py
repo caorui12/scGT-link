@@ -1,6 +1,6 @@
 """
-Build a prior graph from a user-provided reference network (CSV), same message-passing layout as GRNBoost2:
-bidirectional edges, ``edata['w']`` (min–max normalized weights), ``edata['dir']`` (+1 TF→target, −1 mirror, 0 self).
+Build a prior graph from a user-provided reference network (CSV): bidirectional edges,
+``edata['w']`` (min–max normalized weights), ``edata['dir']`` (+1 TF→target, −1 mirror, 0 self).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ def _triples_to_dgl(
     g_n: int,
     add_self_loops: bool,
 ) -> dgl.DGLGraph:
-    """Shared layout with ``build_grnboost2_graph`` after triples (i, j, weight) are fixed."""
+    """Shared layout for gold-style priors after triples (i, j, weight) are fixed."""
     if not triples:
         raise RuntimeError("Gold network: no edges mapped to gene indices.")
 
@@ -125,7 +125,7 @@ def build_gold_network_graph(
     force_gene_symbols: bool = False,
 ) -> dgl.DGLGraph:
     """
-    Load directed TF→target edges from a CSV file and build the same DGL graph as GRNBoost2-style priors.
+    Load directed TF→target edges from a CSV file and build a DGL graph with edge weights and ``dir``.
 
     **Endpoint columns** (case-insensitive), first column is the regulator/source, second is the target:
 
@@ -171,6 +171,66 @@ def build_gold_network_graph(
             continue
         i, j = pair
         triples.append((i, j, float(max(wcol[k], 0.0))))
+
+    g_n = len(gene_names)
+    return _triples_to_dgl(triples, g_n, add_self_loops=add_self_loops)
+
+
+def build_gold_pearson_graph(
+    path: Path | str,
+    gene_names: list[str],
+    expr: torch.Tensor,
+    *,
+    add_self_loops: bool = True,
+    force_gene_symbols: bool = False,
+) -> dgl.DGLGraph:
+    """
+    Same **directed** gold edges as :func:`build_gold_network_graph`, but each TF→target edge is weighted by the
+    **Pearson correlation** of expression between regulator and target across cells (``r_ij = r_ji`` numerically;
+    :func:`_triples_to_dgl` still assigns ``edata['dir']``: +1 on TF→target, −1 on the mirrored edge).
+
+    ``expr``: (G, C) genes × cells, same layout as training.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Gold network file not found: {path}")
+
+    df = pd.read_csv(path)
+    col_map = {c.lower(): c for c in df.columns}
+    c_tf, c_tg = _resolve_edge_column_names(col_map)
+
+    gene_to_idx: dict[str, int] = {}
+    for i, g in enumerate(gene_names):
+        gs = str(g).strip()
+        gene_to_idx[gs] = i
+        gene_to_idx[gs.upper()] = i
+
+    gold_edges: List[Tuple[int, int]] = []
+    n = len(df)
+    for k in range(n):
+        pair = _resolve_endpoints(
+            df[c_tf].iloc[k],
+            df[c_tg].iloc[k],
+            gene_names,
+            gene_to_idx,
+            force_gene_symbols,
+        )
+        if pair is None:
+            continue
+        gold_edges.append(pair)
+
+    if not gold_edges:
+        raise RuntimeError("Gold+Pearson: no edges from CSV mapped to gene indices.")
+
+    z = expr.detach().float().cpu().numpy()
+    if z.shape[0] != len(gene_names):
+        raise ValueError("expr rows must match len(gene_names).")
+    r_full = np.corrcoef(z)
+    np.nan_to_num(r_full, copy=False, nan=0.0)
+
+    triples: List[Tuple[int, int, float]] = []
+    for i, j in gold_edges:
+        triples.append((i, j, float(r_full[i, j])))
 
     g_n = len(gene_names)
     return _triples_to_dgl(triples, g_n, add_self_loops=add_self_loops)

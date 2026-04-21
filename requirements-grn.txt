@@ -11,11 +11,6 @@ scikit-learn
 # Optional: scripts/encode_gene_symbols.py (gene symbol embeddings)
 # transformers>=4.36
 
-# Optional: prior_graph=grnboost2 (train_grn_graph.py)
-# arboreto
-# dask
-# distributed
-
 # Optional: expr_encoder=scgpt (train_grn_graph.py) — pip install scgpt; download a checkpoint from
 # https://github.com/bowang-lab/scGPT#pretrained-scgpt-model-zoo
 # scgpt

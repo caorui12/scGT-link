@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Stage 1: Prior graph — ``correlation``: Pearson top-k; ``grnboost2``: inferred (arboreto); ``gold``: TF/Target edges from ``--gold_network_file``
-         (needs TF list via ``--tf_genes_file`` or ``data_dir/BL--TFs.txt`` or TF indices in splits).
-         ``edata['w']``: Pearson r, or min–max normalized GRNBoost importance; self-loops 1.0.
-         For ``prior_graph=grnboost2``, ``edata['dir']`` is +1 on TF→target edges and −1 on mirrored edges
+Stage 1: Prior graph — ``correlation``: Pearson |r| top-k; ``gold``: TF/Target edges from ``--gold_network_file``;
+         ``gold_pearson``: same **directed** gold edges, ``edata['w']`` from Pearson r(regulator, target) across cells.
+         ``edata['w']``: Pearson r (or min–max normalized); self-loops 1.0.
+         For ``prior_graph=gold`` or ``gold_pearson``, ``edata['dir']`` is +1 on TF→target edges and −1 on mirrored edges
          (unless ``--no_edge_dir_attn``); SparseMHA adds ``edge_dir_scale * dir`` to logits.
 Stage 2: Gene encoder + GraphTransformer + LinkPredictor. Default: GeneExpressionTransformer(expression + lap_pe).
          Use ``--expr_encoder scgpt`` for scGPT-only; ``scgpt_concat`` for expression Transformer + concat(scGPT) + fuse
@@ -81,8 +81,7 @@ from model import GraphTransformer  # noqa: E402
 from utils import LinkPredictor, evaluate  # noqa: E402
 
 from correlation_graph import build_correlation_graph  # noqa: E402
-from gold_network_graph import build_gold_network_graph  # noqa: E402
-from grnboost2_graph import build_grnboost2_graph, resolve_tf_gene_names  # noqa: E402
+from gold_network_graph import build_gold_network_graph, build_gold_pearson_graph  # noqa: E402
 from grn_data import load_edge_split, load_expression_for_grn, load_gene_bert_embeddings  # noqa: E402
 from grn_model import (  # noqa: E402
     GeneExpressionTransformer,
@@ -126,7 +125,7 @@ def semantic_features(
 
 
 def parse_args(argv: Optional[list[str]] = None):
-    p = argparse.ArgumentParser(description="Correlation graph + Graph Transformer GRN")
+    p = argparse.ArgumentParser(description="Prior graph (Pearson / gold) + Graph Transformer GRN")
     p.add_argument(
         "--dataset",
         type=str,
@@ -207,45 +206,31 @@ def parse_args(argv: Optional[list[str]] = None):
         default=4,
         help="Sparse MHA heads; --gt_hidden_dim %% this must be 0 (e.g. 80/6 is invalid).",
     )
-    p.add_argument("--top_k", type=int, default=20, help="Prior graph: top-k (Pearson neighbors or GRNBoost2 incoming/target)")
+    p.add_argument(
+        "--top_k",
+        type=int,
+        default=20,
+        help="prior_graph=correlation: top-k neighbors per gene by |Pearson r|.",
+    )
     p.add_argument(
         "--prior_graph",
         type=str,
-        choices=("correlation", "grnboost2", "gold"),
+        choices=("correlation", "gold", "gold_pearson"),
         default="correlation",
-        help="correlation: Pearson |grn| top-k. grnboost2: inferred prior (arboreto). "
-        "gold: reference network from --gold_network_file (TF→target edges, optional weights).",
+        help="correlation: Pearson |r| top-k graph. gold: reference network from --gold_network_file (optional CSV weights). "
+        "gold_pearson: gold edges + Pearson r as weights (directed structure via edata['dir']).",
     )
     p.add_argument(
         "--gold_network_file",
         type=str,
         default="",
-        help="prior_graph=gold: CSV with TF/Target or Gene1/Gene2 (or Source/Target, etc.); "
-        "see gold_network_graph.build_gold_network_graph.",
+        help="prior_graph=gold or gold_pearson: CSV with TF/Target or Gene1/Gene2 (or Source/Target, etc.); "
+        "see gold_network_graph.build_gold_network_graph / build_gold_pearson_graph.",
     )
     p.add_argument(
         "--gold_network_gene_symbols",
         action="store_true",
-        help="prior_graph=gold: parse TF/Target only as gene symbols (do not interpret integers as indices).",
-    )
-    p.add_argument(
-        "--tf_genes_file",
-        type=str,
-        default="",
-        help="Optional text file: one TF gene symbol per line (for prior_graph=grnboost2). "
-        "If empty, tries data_dir/BL--TFs.txt then TF indices from split CSVs.",
-    )
-    p.add_argument(
-        "--grnboost2_limit",
-        type=int,
-        default=None,
-        help="After inferring all links, keep at most this many rows (global, by importance) before per-target top_k.",
-    )
-    p.add_argument(
-        "--grnboost2_n_estimators",
-        type=int,
-        default=500,
-        help="GradientBoostingRegressor n_estimators per target (arboreto SGBM default is 5000; lower=faster).",
+        help="prior_graph=gold or gold_pearson: parse TF/Target only as gene symbols (do not interpret integers as indices).",
     )
     p.add_argument("--no_cuda", action="store_true")
     p.add_argument("--seed", type=int, default=42)
@@ -273,7 +258,7 @@ def parse_args(argv: Optional[list[str]] = None):
     p.add_argument(
         "--no_edge_dir_attn",
         action="store_true",
-        help="For prior_graph=grnboost2 or gold: do not add learnable edata['dir'] (±1) bias in SparseMHA. "
+        help="For prior_graph=gold or gold_pearson: do not add learnable edata['dir'] (±1) bias in SparseMHA. "
         "Ignored for correlation prior (no dir field).",
     )
     p.add_argument(
@@ -444,25 +429,20 @@ def run_training(args: Namespace) -> dict:
             )
         except (FileNotFoundError, ValueError, RuntimeError) as e:
             raise SystemExit(str(e)) from e
-    else:
-        try:
-            tf_names = resolve_tf_gene_names(
-                data_dir,
-                split_dir,
-                gene_names,
-                args.tf_genes_file.strip() or None,
+    elif args.prior_graph == "gold_pearson":
+        if not args.gold_network_file.strip():
+            raise SystemExit(
+                "prior_graph=gold_pearson requires --gold_network_file (gold structure; weights from Pearson r)."
             )
-        except ValueError as e:
+        try:
+            g = build_gold_pearson_graph(
+                Path(args.gold_network_file.strip()),
+                gene_names,
+                expr_cpu,
+                force_gene_symbols=args.gold_network_gene_symbols,
+            )
+        except (FileNotFoundError, ValueError, RuntimeError) as e:
             raise SystemExit(str(e)) from e
-        g = build_grnboost2_graph(
-            expr_cpu,
-            gene_names,
-            tf_names,
-            top_k=args.top_k,
-            seed=args.seed,
-            grnboost2_limit=args.grnboost2_limit,
-            n_estimators=args.grnboost2_n_estimators,
-        )
     g = g.to(device)
     with torch.no_grad():
         pe = dgl.lap_pe(g, k=in_dim, padding=True)
@@ -535,7 +515,7 @@ def run_training(args: Namespace) -> dict:
             dropout=args.dropout,
         ).to(device)
     use_edge_w = not args.no_edge_weight_attn
-    use_dir_attn = args.prior_graph in ("grnboost2", "gold") and not args.no_edge_dir_attn
+    use_dir_attn = args.prior_graph in ("gold", "gold_pearson") and not args.no_edge_dir_attn
     gt_model = GraphTransformer(
         in_dim,
         args.gt_hidden_dim,
@@ -592,7 +572,7 @@ def run_training(args: Namespace) -> dict:
         + f" | edge_weight_attn={'on' if use_edge_w else 'off'}"
         + (
             f" | edge_dir_attn={'on' if use_dir_attn else 'off'}"
-            if args.prior_graph in ("grnboost2", "gold")
+            if args.prior_graph in ("gold", "gold_pearson")
             else ""
         )
     )
@@ -689,11 +669,9 @@ def run_training(args: Namespace) -> dict:
                     "use_edge_weight_attn": use_edge_w,
                     "prior_graph": args.prior_graph,
                     "gold_network_file": str(Path(args.gold_network_file).resolve())
-                    if args.prior_graph == "gold" and args.gold_network_file.strip()
+                    if args.prior_graph in ("gold", "gold_pearson") and args.gold_network_file.strip()
                     else "",
                     "gold_network_gene_symbols": bool(args.gold_network_gene_symbols),
-                    "grnboost2_limit": args.grnboost2_limit,
-                    "grnboost2_n_estimators": args.grnboost2_n_estimators,
                     "use_directed_edge_attn": use_dir_attn,
                     "nhead": args.nhead,
                     "num_layers": args.num_layers,
