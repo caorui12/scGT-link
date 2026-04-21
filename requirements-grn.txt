@@ -15,3 +15,7 @@ scikit-learn
 # arboreto
 # dask
 # distributed
+
+# Optional: expr_encoder=scgpt (train_grn_graph.py) — pip install scgpt; download a checkpoint from
+# https://github.com/bowang-lab/scGPT#pretrained-scgpt-model-zoo
+# scgpt

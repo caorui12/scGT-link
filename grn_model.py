@@ -1,7 +1,54 @@
-"""Gene-level Transformer encoder: expression + graph structural PE → per-gene embeddings."""
+"""Gene-level encoders: expression + graph structural PE → per-gene embeddings for GraphTransformer."""
 
 import torch
 import torch.nn as nn
+
+
+class ScGPTGeneExpressionEncoder(nn.Module):
+    """
+    scGPT pretrained per-gene token embeddings (data-independent) projected to ``d_model``,
+    plus optional light Transformer refinement. ``gene_expr`` passed to ``forward`` is ignored
+    (kept for API compatibility with ``GeneExpressionTransformer``).
+    """
+
+    def __init__(
+        self,
+        scgpt_gene_emb: torch.Tensor,
+        d_model: int,
+        refine_layers: int = 0,
+        refine_nhead: int = 4,
+        dim_feedforward: int = 256,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        if scgpt_gene_emb.dim() != 2:
+            raise ValueError(f"scgpt_gene_emb must be (G, D), got {tuple(scgpt_gene_emb.shape)}")
+        self.d_model = d_model
+        self.register_buffer("scgpt_gene_emb", scgpt_gene_emb.detach().float())
+        self.proj = nn.Linear(scgpt_gene_emb.shape[1], d_model)
+        if refine_layers > 0:
+            if d_model % refine_nhead != 0:
+                raise ValueError(
+                    f"d_model ({d_model}) must be divisible by refine_nhead ({refine_nhead})"
+                )
+            enc = nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=refine_nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                batch_first=True,
+                activation="gelu",
+                norm_first=True,
+            )
+            self.refine = nn.TransformerEncoder(enc, num_layers=refine_layers)
+        else:
+            self.refine = None
+
+    def forward(self, gene_expr: torch.Tensor, structural_pe: torch.Tensor) -> torch.Tensor:
+        x = self.proj(self.scgpt_gene_emb.to(dtype=structural_pe.dtype)) + structural_pe
+        if self.refine is not None:
+            x = self.refine(x.unsqueeze(0)).squeeze(0)
+        return x
 
 
 class GeneExpressionTransformer(nn.Module):

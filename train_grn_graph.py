@@ -5,7 +5,9 @@ Stage 1: Prior graph — ``--prior_graph correlation`` (default): Pearson top-k;
          ``edata['w']``: Pearson r, or min–max normalized GRNBoost importance; self-loops 1.0.
          For ``prior_graph=grnboost2``, ``edata['dir']`` is +1 on TF→target edges and −1 on mirrored edges
          (unless ``--no_edge_dir_attn``); SparseMHA adds ``edge_dir_scale * dir`` to logits.
-Stage 2: GeneExpressionTransformer(expression + lap_pe); GraphTransformer + LinkPredictor.
+Stage 2: Gene encoder + GraphTransformer + LinkPredictor. Default: GeneExpressionTransformer(expression + lap_pe).
+         Use ``--expr_encoder scgpt`` (+ ``--scgpt_emb_pt`` or ``--scgpt_model_dir``) to replace expression encoding
+         with pretrained scGPT gene token embeddings (see scripts/precompute_scgpt_gene_emb.py).
          SparseMHA adds learnable-scaled ``w`` to attention logits unless ``--no_edge_weight_attn``.
          Optional gene-symbol embeddings (--gene_bert_emb): ``--gene_bert_fusion additive`` (default)
          adds semantics inside GraphTransformer; ``link_concat`` fuses projected BioBERT only at the
@@ -16,12 +18,20 @@ Example (from this repo root; ``src/`` holds GraphTransformer + LinkPredictor, n
     --data_dir data/hESC/TFs+500 \\
     --split_dir data/Train_validation_test/hESC_500 \\
     --epochs 50 --output_dir out_grn_gt
+
+Registered datasets (``--dataset NAME`` sets ``data_dir`` + ``split_dir``): hESC_500, hESC_1000, mESC_500, mESC_1000.
+
+Train all four and write ``all_results.json`` under the output root:
+  python train_grn_graph.py --train_all --output_dir out_multi ...
+
+Programmatic single run: ``from train_grn_graph import train_grn_dataset`` then ``train_grn_dataset("hESC_500", epochs=50)``.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+from argparse import Namespace
 
 
 def _prefer_conda_over_user_site() -> None:
@@ -73,7 +83,28 @@ from utils import LinkPredictor, evaluate  # noqa: E402
 from correlation_graph import build_correlation_graph  # noqa: E402
 from grnboost2_graph import build_grnboost2_graph, resolve_tf_gene_names  # noqa: E402
 from grn_data import load_edge_split, load_expression_for_grn, load_gene_bert_embeddings  # noqa: E402
-from grn_model import GeneExpressionTransformer  # noqa: E402
+from grn_model import GeneExpressionTransformer, ScGPTGeneExpressionEncoder  # noqa: E402
+from scgpt_loader import (  # noqa: E402
+    load_scgpt_emb_from_pt,
+    load_scgpt_gene_embedding_matrix,
+)
+
+# Registered datasets under ``data/``: expression folder + Train_validation_test split folder.
+DATASET_REGISTRY: dict[str, tuple[str, str]] = {
+    "hESC_500": ("data/hESC/TFs+500", "data/Train_validation_test/hESC_500"),
+    "hESC_1000": ("data/hESC/TFs+1000", "data/Train_validation_test/hESC_1000"),
+    "mESC_500": ("data/mESC/TFs+500", "data/Train_validation_test/mESC_500"),
+    "mESC_1000": ("data/mESC/TFs+1000", "data/Train_validation_test/mESC_1000"),
+}
+DATASET_ORDER = ("hESC_500", "hESC_1000", "mESC_500", "mESC_1000")
+
+
+def resolve_gene_bert_emb(data_dir: Path, gene_bert_emb: str) -> str:
+    """If ``gene_bert_emb`` is set, use it; else use ``data_dir/gene_name_biobert.pt`` if that file exists."""
+    if gene_bert_emb.strip():
+        return gene_bert_emb.strip()
+    p = data_dir / "gene_name_biobert.pt"
+    return str(p) if p.is_file() else ""
 
 
 def semantic_features(
@@ -89,17 +120,59 @@ def semantic_features(
     return torch.zeros(n_genes, in_dim, device=device, dtype=dtype)
 
 
-def parse_args():
+def parse_args(argv: Optional[list[str]] = None):
     p = argparse.ArgumentParser(description="Correlation graph + Graph Transformer GRN")
+    p.add_argument(
+        "--dataset",
+        type=str,
+        default="",
+        metavar="NAME",
+        help="Registered key: sets --data_dir and --split_dir. "
+        f"One of: {', '.join(DATASET_ORDER)}. Overrides --data_dir/--split_dir when non-empty.",
+    )
+    p.add_argument(
+        "--train_all",
+        action="store_true",
+        help="Train all four registry datasets sequentially; --output_dir is the root "
+        "(one subfolder per dataset). Writes all_results.json at the root.",
+    )
     p.add_argument("--data_dir", type=str, default="data/hESC/TFs+500")
     p.add_argument("--split_dir", type=str, default="data/Train_validation_test/hESC_500")
     p.add_argument("--output_dir", type=str, default="out_grn_gt")
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--edge_batch_size", type=int, default=4096)
     p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--d_model", type=int, default=128, help="GeneExpressionTransformer d_model = GT in_dim = lap_pe k")
-    p.add_argument("--nhead", type=int, default=4)
-    p.add_argument("--num_layers", type=int, default=4, help="GeneExpressionTransformer layers")
+    p.add_argument(
+        "--expr_encoder",
+        type=str,
+        choices=("transformer", "scgpt"),
+        default="transformer",
+        help="transformer: Linear(n_cells)+TransformerEncoder on genes (default). "
+        "scgpt: pretrained scGPT gene token embeddings + Linear to d_model (see --scgpt_*).",
+    )
+    p.add_argument("--d_model", type=int, default=128, help="GT in_dim = lap_pe k; expression encoder output dim")
+    p.add_argument("--nhead", type=int, default=4, help="GeneExpressionTransformer heads (ignored for expr_encoder=scgpt unless --scgpt_refine_layers>0)")
+    p.add_argument("--num_layers", type=int, default=4, help="GeneExpressionTransformer layers (ignored for expr_encoder=scgpt unless using refine)")
+    p.add_argument(
+        "--scgpt_model_dir",
+        type=str,
+        default="",
+        help="Directory with args.json, vocab.json, best_model.pt (expr_encoder=scgpt). Ignored if --scgpt_emb_pt is set.",
+    )
+    p.add_argument(
+        "--scgpt_emb_pt",
+        type=str,
+        default="",
+        help="Precomputed .pt from scripts/precompute_scgpt_gene_emb.py (overrides --scgpt_model_dir).",
+    )
+    p.add_argument(
+        "--scgpt_refine_layers",
+        type=int,
+        default=0,
+        help="Optional TransformerEncoder layers on top of proj(scGPT)+Lap PE (expr_encoder=scgpt).",
+    )
+    p.add_argument("--scgpt_refine_nhead", type=int, default=4)
+    p.add_argument("--scgpt_refine_dim_feedforward", type=int, default=256)
     p.add_argument("--dim_feedforward", type=int, default=256)
     p.add_argument("--dropout", type=float, default=0.1)
     p.add_argument(
@@ -148,7 +221,8 @@ def parse_args():
         "--gene_bert_emb",
         type=str,
         default="",
-        help="Path to .pt from scripts/encode_gene_symbols.py (empty = zero semantic, ablation baseline)",
+        help="Path to .pt from scripts/encode_gene_symbols.py (empty = try data_dir/gene_name_biobert.pt if present, "
+        "else zero semantic). Same path is reused for every run when --train_all unless you rely on per-dir auto.",
     )
     p.add_argument(
         "--gene_bert_fusion",
@@ -176,7 +250,9 @@ def parse_args():
         default=0.5,
         help="Test precision/recall/F1/accuracy: predict positive if sigmoid(logit) >= this",
     )
-    return p.parse_args()
+    if argv is None:
+        return p.parse_args()
+    return p.parse_args(argv)
 
 
 def set_seed(seed: int):
@@ -190,7 +266,7 @@ def set_seed(seed: int):
 
 @torch.no_grad()
 def logits_all_edges(
-    seq_model: GeneExpressionTransformer,
+    seq_model: nn.Module,
     gt_model: GraphTransformer,
     predictor: LinkPredictor,
     gene_expr: torch.Tensor,
@@ -278,11 +354,19 @@ def compute_test_metrics(
     }
 
 
-def main():
-    args = parse_args()
-    if args.d_model % args.nhead != 0:
+def run_training(args: Namespace) -> dict:
+    """Run one training job. ``args`` is an argparse namespace (see :func:`parse_args`). Returns results dict."""
+    if args.expr_encoder == "transformer" and args.d_model % args.nhead != 0:
         raise SystemExit(
             f"--d_model ({args.d_model}) must be divisible by --nhead ({args.nhead})"
+        )
+    if (
+        args.expr_encoder == "scgpt"
+        and args.scgpt_refine_layers > 0
+        and args.d_model % args.scgpt_refine_nhead != 0
+    ):
+        raise SystemExit(
+            f"--d_model ({args.d_model}) must be divisible by --scgpt_refine_nhead ({args.scgpt_refine_nhead})"
         )
     if args.gt_hidden_dim % args.gt_num_heads != 0:
         raise SystemExit(
@@ -342,7 +426,7 @@ def main():
     gene_bert_raw: Optional[torch.Tensor] = None
     bert_proj: Optional[nn.Linear] = None
     bert_dim: Optional[int] = None
-    emb_path = args.gene_bert_emb.strip()
+    emb_path = resolve_gene_bert_emb(data_dir, args.gene_bert_emb)
     if emb_path:
         emb_p = Path(emb_path)
         if not emb_p.is_file():
@@ -359,14 +443,41 @@ def main():
             flush=True,
         )
 
-    seq_model = GeneExpressionTransformer(
-        n_cells=n_cells,
-        d_model=in_dim,
-        nhead=args.nhead,
-        num_layers=args.num_layers,
-        dim_feedforward=args.dim_feedforward,
-        dropout=args.dropout,
-    ).to(device)
+    scgpt_dim: Optional[int] = None
+    if args.expr_encoder == "scgpt":
+        if not args.scgpt_emb_pt.strip() and not args.scgpt_model_dir.strip():
+            raise SystemExit(
+                "expr_encoder=scgpt requires --scgpt_emb_pt and/or --scgpt_model_dir "
+                "(precomputed .pt or scGPT checkpoint directory)."
+            )
+        if args.scgpt_emb_pt.strip():
+            scgpt_mat_cpu, scgpt_dim = load_scgpt_emb_from_pt(
+                Path(args.scgpt_emb_pt.strip()), gene_names
+            )
+        else:
+            scgpt_mat_cpu, scgpt_dim = load_scgpt_gene_embedding_matrix(
+                Path(args.scgpt_model_dir.strip()),
+                gene_names,
+                device=torch.device("cpu"),
+            )
+        scgpt_mat = scgpt_mat_cpu.to(device=device)
+        seq_model = ScGPTGeneExpressionEncoder(
+            scgpt_mat,
+            d_model=in_dim,
+            refine_layers=args.scgpt_refine_layers,
+            refine_nhead=args.scgpt_refine_nhead,
+            dim_feedforward=args.scgpt_refine_dim_feedforward,
+            dropout=args.dropout,
+        ).to(device)
+    else:
+        seq_model = GeneExpressionTransformer(
+            n_cells=n_cells,
+            d_model=in_dim,
+            nhead=args.nhead,
+            num_layers=args.num_layers,
+            dim_feedforward=args.dim_feedforward,
+            dropout=args.dropout,
+        ).to(device)
     use_edge_w = not args.no_edge_weight_attn
     use_dir_attn = args.prior_graph == "grnboost2" and not args.no_edge_dir_attn
     gt_model = GraphTransformer(
@@ -408,7 +519,13 @@ def main():
 
     n_edges_graph = g.num_edges()
     print(
-        f"Genes={n_genes} cells={n_cells} | prior={args.prior_graph} edges={n_edges_graph} | "
+        f"Genes={n_genes} cells={n_cells} | expr_encoder={args.expr_encoder}"
+        + (
+            f" scgpt_dim={scgpt_dim}"
+            if args.expr_encoder == "scgpt" and scgpt_dim is not None
+            else ""
+        )
+        + f" | prior={args.prior_graph} edges={n_edges_graph} | "
         f"train edges={n_train} (pos={int(n_pos)} neg={int(n_neg)}) | pos_weight={pos_weight.item():.3f}"
         + (f" | gene_bert_emb D={bert_dim}" if bert_dim else " | gene_bert_emb (none)")
         + (
@@ -501,6 +618,11 @@ def main():
                     "n_genes": n_genes,
                     "n_cells": n_cells,
                     "d_model": in_dim,
+                    "expr_encoder": args.expr_encoder,
+                    "scgpt_dim": scgpt_dim,
+                    "scgpt_refine_layers": args.scgpt_refine_layers,
+                    "scgpt_refine_nhead": args.scgpt_refine_nhead,
+                    "scgpt_refine_dim_feedforward": args.scgpt_refine_dim_feedforward,
                     "gt_hidden_dim": args.gt_hidden_dim,
                     "gt_num_layers": args.gt_num_layers,
                     "top_k": args.top_k,
@@ -543,7 +665,30 @@ def main():
         use_edge_weight_attn=use_ew_eval,
         use_directed_edge_bias=use_dir_eval,
     ).to(device)
-    seq_model.load_state_dict(ckpt["seq_model"])
+    expr_enc_saved = meta.get("expr_encoder", "transformer")
+    if expr_enc_saved == "scgpt":
+        sd_seq = ckpt["seq_model"]
+        if "scgpt_gene_emb" not in sd_seq:
+            raise SystemExit("checkpoint meta says expr_encoder=scgpt but seq_model has no scgpt_gene_emb buffer")
+        seq_model = ScGPTGeneExpressionEncoder(
+            sd_seq["scgpt_gene_emb"].cpu(),
+            d_model=int(meta.get("d_model", in_dim)),
+            refine_layers=int(meta.get("scgpt_refine_layers", 0)),
+            refine_nhead=int(meta.get("scgpt_refine_nhead", 4)),
+            dim_feedforward=int(meta.get("scgpt_refine_dim_feedforward", 256)),
+            dropout=float(args.dropout),
+        ).to(device)
+        seq_model.load_state_dict(sd_seq)
+    else:
+        seq_model = GeneExpressionTransformer(
+            n_cells=n_cells,
+            d_model=in_dim,
+            nhead=args.nhead,
+            num_layers=args.num_layers,
+            dim_feedforward=args.dim_feedforward,
+            dropout=args.dropout,
+        ).to(device)
+        seq_model.load_state_dict(ckpt["seq_model"])
     gt_model.load_state_dict(ckpt["gt_model"])
     predictor.load_state_dict(ckpt["predictor"])
     if "bert_proj" in ckpt:
@@ -600,6 +745,7 @@ def main():
         "n_edges_correlation_graph": int(n_edges_graph),
         "data_dir": str(data_dir),
         "split_dir": str(split_dir),
+        "dataset_key": (args.dataset or None),
         "history": history,
         "config": vars(args),
     }
@@ -612,6 +758,90 @@ def main():
         labels=test_y.cpu().numpy(),
     )
     print(f"Saved: {out_dir / 'results.json'}, {out_dir / 'best.pt'}, {out_dir / 'test_predictions.npz'}")
+    return results
+
+
+def train_grn_dataset(dataset_key: str, **kwargs) -> dict:
+    """Programmatic single-dataset training. ``dataset_key`` must be in :data:`DATASET_REGISTRY`.
+    ``kwargs`` override argparse defaults (e.g. ``epochs``, ``lr``, ``output_dir``, ``prior_graph``).
+    """
+    if dataset_key not in DATASET_REGISTRY:
+        raise ValueError(
+            f"Unknown dataset_key={dataset_key!r}; expected one of {list(DATASET_REGISTRY)}"
+        )
+    args = parse_args([])
+    for k, v in kwargs.items():
+        setattr(args, k, v)
+    dd, sd = DATASET_REGISTRY[dataset_key]
+    args.data_dir = dd
+    args.split_dir = sd
+    args.dataset = dataset_key
+    if "output_dir" not in kwargs:
+        args.output_dir = str(_ROOT / "out_grn" / dataset_key)
+    return run_training(args)
+
+
+def main():
+    args = parse_args()
+    if args.train_all and args.dataset:
+        raise SystemExit("Use either --train_all or --dataset, not both.")
+    if args.train_all:
+        root = Path(args.output_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        per_ds: dict[str, dict] = {}
+        for name in DATASET_ORDER:
+            sub = Namespace(**vars(args))
+            sub.train_all = False
+            sub.dataset = name
+            sub.data_dir, sub.split_dir = DATASET_REGISTRY[name]
+            sub.output_dir = str(root / name)
+            print(f"\n{'=' * 72}\nDataset {name}  ->  {sub.output_dir}\n{'=' * 72}\n", flush=True)
+            per_ds[name] = run_training(sub)
+        # Aggregate summary (mean of test metrics where finite)
+        metric_keys = [
+            "test_auroc",
+            "test_auprc",
+            "test_precision",
+            "test_recall",
+            "test_f1",
+            "test_accuracy",
+            "best_val_auroc",
+        ]
+        aggregate: dict[str, float] = {}
+        for mk in metric_keys:
+            vals = []
+            for name in DATASET_ORDER:
+                v = per_ds[name].get(mk)
+                if v is not None and isinstance(v, (int, float)) and v == v:  # not NaN
+                    vals.append(float(v))
+            if vals:
+                aggregate[f"mean_{mk}"] = float(np.mean(vals))
+        all_results = {
+            "datasets": {
+                k: {
+                    **{m: per_ds[k].get(m) for m in metric_keys},
+                    "dataset_key": per_ds[k].get("dataset_key"),
+                    "n_edges_correlation_graph": per_ds[k].get("n_edges_correlation_graph"),
+                    "output_dir": str(root / k),
+                }
+                for k in DATASET_ORDER
+            },
+            "aggregate": aggregate,
+            "config": vars(args),
+        }
+        with open(root / "all_results.json", "w") as f:
+            json.dump(all_results, f, indent=2)
+        print(f"\nWrote aggregate summary: {root / 'all_results.json'}", flush=True)
+        return
+
+    if args.dataset:
+        if args.dataset not in DATASET_REGISTRY:
+            raise SystemExit(
+                f"Unknown --dataset {args.dataset!r}; choose one of {list(DATASET_REGISTRY)}"
+            )
+        args.data_dir, args.split_dir = DATASET_REGISTRY[args.dataset]
+
+    run_training(args)
 
 
 if __name__ == "__main__":
