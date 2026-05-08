@@ -32,28 +32,3 @@ def load_edge_split(split_dir: Path, name: str) -> Tuple[torch.Tensor, torch.Ten
     lab = df["Label"].values.astype(np.float32)
     ei = np.stack([tf, tgt], axis=0)
     return torch.from_numpy(ei), torch.from_numpy(lab)
-
-
-def load_gene_bert_embeddings(path: Path, gene_names: list[str]) -> torch.Tensor:
-    """
-    Load precomputed BioBERT (or other) embeddings aligned with expression row order.
-    Expects torch.save dict: embeddings (G, D), optional gene_names for validation.
-    """
-    obj = torch.load(path, map_location="cpu")
-    if isinstance(obj, dict):
-        emb = obj["embeddings"]
-        stored = obj.get("gene_names")
-    else:
-        emb = obj
-        stored = None
-    if not isinstance(emb, torch.Tensor):
-        emb = torch.as_tensor(emb)
-    if emb.dim() != 2:
-        raise ValueError(f"embeddings must be 2D, got shape {tuple(emb.shape)}")
-    if emb.shape[0] != len(gene_names):
-        raise ValueError(
-            f"Embedding rows {emb.shape[0]} != len(gene_names) {len(gene_names)}"
-        )
-    if stored is not None and list(stored) != list(gene_names):
-        raise ValueError("gene_names in embedding file do not match expression matrix order")
-    return emb.float()

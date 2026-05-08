@@ -1,0 +1,460 @@
+{
+  "meta": {
+    "suite": "graph_transformer_grn",
+    "train_script": "/home/rui.cao/deeplearning/Graph_Transformer/train_grn_graph.py",
+    "started_utc": "2026-04-25T12:37:13.451520+00:00",
+    "benchmark_root": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset",
+    "output_root": "/home/rui.cao/deeplearning/Graph_Transformer",
+    "epochs_forwarded": 50,
+    "seed_forwarded": 42,
+    "n_tasks": 44,
+    "dry_run": false,
+    "train_grn_graph_defaults_for_rest": true,
+    "no_cuda": false,
+    "extra_train_args": [],
+    "finished_utc": "2026-04-25T12:37:13.451574+00:00",
+    "failures": 0
+  },
+  "runs": [
+    {
+      "slug": "Lofgof__mESC__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Lofgof Dataset/mESC/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Lofgof Dataset/mESC/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Lofgof__mESC__1000",
+      "exit_code": 0,
+      "test_auroc": 0.7199817751987966,
+      "test_auprc": 0.33854929016220003,
+      "best_val_auroc": 0.8578034436109157
+    },
+    {
+      "slug": "Lofgof__mESC__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Lofgof Dataset/mESC/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Lofgof Dataset/mESC/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Lofgof__mESC__500",
+      "exit_code": 0,
+      "test_auroc": 0.7675536181108572,
+      "test_auprc": 0.36733833797869947,
+      "best_val_auroc": 0.880645688375703
+    },
+    {
+      "slug": "Non_Specific__hESC__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/hESC/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/hESC/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__hESC__1000",
+      "exit_code": 0,
+      "test_auroc": 0.7429452975196537,
+      "test_auprc": 0.04405306118950901,
+      "best_val_auroc": 0.813360246059208
+    },
+    {
+      "slug": "Non_Specific__hESC__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/hESC/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/hESC/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__hESC__500",
+      "exit_code": 0,
+      "test_auroc": 0.6901419289122209,
+      "test_auprc": 0.044989937428919935,
+      "best_val_auroc": 0.7489316565428407
+    },
+    {
+      "slug": "Non_Specific__hHEP__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/hHEP/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/hHEP/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__hHEP__1000",
+      "exit_code": 0,
+      "test_auroc": 0.7540047335708487,
+      "test_auprc": 0.05562687845674889,
+      "best_val_auroc": 0.783167855377445
+    },
+    {
+      "slug": "Non_Specific__hHEP__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/hHEP/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/hHEP/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__hHEP__500",
+      "exit_code": 0,
+      "test_auroc": 0.7798139525495422,
+      "test_auprc": 0.07921517376143371,
+      "best_val_auroc": 0.8023048863382818
+    },
+    {
+      "slug": "Non_Specific__mDC__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mDC/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mDC/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__mDC__1000",
+      "exit_code": 0,
+      "test_auroc": 0.8624451227607874,
+      "test_auprc": 0.22620953665676002,
+      "best_val_auroc": 0.888295334258401
+    },
+    {
+      "slug": "Non_Specific__mDC__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mDC/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mDC/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__mDC__500",
+      "exit_code": 0,
+      "test_auroc": 0.7955245556166393,
+      "test_auprc": 0.1056386654328128,
+      "best_val_auroc": 0.8086244191635956
+    },
+    {
+      "slug": "Non_Specific__mESC__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mESC/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mESC/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__mESC__1000",
+      "exit_code": 0,
+      "test_auroc": 0.8641588291381898,
+      "test_auprc": 0.08207345916361493,
+      "best_val_auroc": 0.8489561202232232
+    },
+    {
+      "slug": "Non_Specific__mESC__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mESC/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mESC/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__mESC__500",
+      "exit_code": 0,
+      "test_auroc": 0.8231353891345339,
+      "test_auprc": 0.09131745001073238,
+      "best_val_auroc": 0.8293464626317149
+    },
+    {
+      "slug": "Non_Specific__mHSC-E__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mHSC-E/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mHSC-E/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__mHSC-E__1000",
+      "exit_code": 0,
+      "test_auroc": 0.7778141366277123,
+      "test_auprc": 0.12079004848189899,
+      "best_val_auroc": 0.8362168396770472
+    },
+    {
+      "slug": "Non_Specific__mHSC-E__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mHSC-E/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mHSC-E/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__mHSC-E__500",
+      "exit_code": 0,
+      "test_auroc": 0.7679037455016408,
+      "test_auprc": 0.12659298822225537,
+      "best_val_auroc": 0.8217308977500557
+    },
+    {
+      "slug": "Non_Specific__mHSC-GM__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mHSC-GM/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mHSC-GM/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__mHSC-GM__1000",
+      "exit_code": 0,
+      "test_auroc": 0.7738463951631303,
+      "test_auprc": 0.17116567096535437,
+      "best_val_auroc": 0.8421491045397751
+    },
+    {
+      "slug": "Non_Specific__mHSC-GM__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mHSC-GM/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mHSC-GM/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__mHSC-GM__500",
+      "exit_code": 0,
+      "test_auroc": 0.7491979810792242,
+      "test_auprc": 0.22712454750878638,
+      "best_val_auroc": 0.8520134893870265
+    },
+    {
+      "slug": "Non_Specific__mHSC-L__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mHSC-L/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mHSC-L/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__mHSC-L__1000",
+      "exit_code": 0,
+      "test_auroc": 0.7087811236870015,
+      "test_auprc": 0.12852933472515313,
+      "best_val_auroc": 0.7266666666666667
+    },
+    {
+      "slug": "Non_Specific__mHSC-L__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mHSC-L/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Non-Specific Dataset/mHSC-L/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Non_Specific__mHSC-L__500",
+      "exit_code": 0,
+      "test_auroc": 0.6031254242547662,
+      "test_auprc": 0.07887358467784925,
+      "best_val_auroc": 0.7312000000000001
+    },
+    {
+      "slug": "STRING__hESC__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/hESC/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/hESC/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__hESC__1000",
+      "exit_code": 0,
+      "test_auroc": 0.9062764840897912,
+      "test_auprc": 0.2861511625713221,
+      "best_val_auroc": 0.9361179698216735
+    },
+    {
+      "slug": "STRING__hESC__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/hESC/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/hESC/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__hESC__500",
+      "exit_code": 0,
+      "test_auroc": 0.9166413271148266,
+      "test_auprc": 0.36743765662489747,
+      "best_val_auroc": 0.9418028741471913
+    },
+    {
+      "slug": "STRING__hHEP__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/hHEP/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/hHEP/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__hHEP__1000",
+      "exit_code": 0,
+      "test_auroc": 0.9152698104522797,
+      "test_auprc": 0.3021839440270031,
+      "best_val_auroc": 0.9389807192925068
+    },
+    {
+      "slug": "STRING__hHEP__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/hHEP/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/hHEP/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__hHEP__500",
+      "exit_code": 0,
+      "test_auroc": 0.9008052727854241,
+      "test_auprc": 0.30873780232925585,
+      "best_val_auroc": 0.9383049994955617
+    },
+    {
+      "slug": "STRING__mDC__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mDC/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mDC/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__mDC__1000",
+      "exit_code": 0,
+      "test_auroc": 0.9213896669178049,
+      "test_auprc": 0.48338807698837777,
+      "best_val_auroc": 0.9609248685623835
+    },
+    {
+      "slug": "STRING__mDC__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mDC/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mDC/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__mDC__500",
+      "exit_code": 0,
+      "test_auroc": 0.9053509639886391,
+      "test_auprc": 0.4050645501049564,
+      "best_val_auroc": 0.9485426997643454
+    },
+    {
+      "slug": "STRING__mESC__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mESC/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mESC/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__mESC__1000",
+      "exit_code": 0,
+      "test_auroc": 0.9296590979621019,
+      "test_auprc": 0.3208341612091045,
+      "best_val_auroc": 0.9431875075069361
+    },
+    {
+      "slug": "STRING__mESC__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mESC/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mESC/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__mESC__500",
+      "exit_code": 0,
+      "test_auroc": 0.9284420272685031,
+      "test_auprc": 0.30934987980270945,
+      "best_val_auroc": 0.9493979434173372
+    },
+    {
+      "slug": "STRING__mHSC-E__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mHSC-E/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mHSC-E/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__mHSC-E__1000",
+      "exit_code": 0,
+      "test_auroc": 0.8920803177895283,
+      "test_auprc": 0.29941165979775325,
+      "best_val_auroc": 0.9372440216673272
+    },
+    {
+      "slug": "STRING__mHSC-E__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mHSC-E/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mHSC-E/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__mHSC-E__500",
+      "exit_code": 0,
+      "test_auroc": 0.8781640897282305,
+      "test_auprc": 0.2734367322526915,
+      "best_val_auroc": 0.929689744326343
+    },
+    {
+      "slug": "STRING__mHSC-GM__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mHSC-GM/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mHSC-GM/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__mHSC-GM__1000",
+      "exit_code": 0,
+      "test_auroc": 0.890873340979846,
+      "test_auprc": 0.4251119015752472,
+      "best_val_auroc": 0.9277914951989026
+    },
+    {
+      "slug": "STRING__mHSC-GM__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mHSC-GM/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mHSC-GM/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__mHSC-GM__500",
+      "exit_code": 0,
+      "test_auroc": 0.8536411853035584,
+      "test_auprc": 0.32116042567482955,
+      "best_val_auroc": 0.9231389411448535
+    },
+    {
+      "slug": "STRING__mHSC-L__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mHSC-L/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mHSC-L/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__mHSC-L__1000",
+      "exit_code": 0,
+      "test_auroc": 0.838421642837118,
+      "test_auprc": 0.20254964378741888,
+      "best_val_auroc": 1.0
+    },
+    {
+      "slug": "STRING__mHSC-L__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mHSC-L/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/STRING Dataset/mHSC-L/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/STRING__mHSC-L__500",
+      "exit_code": 0,
+      "test_auroc": 0.868141592920354,
+      "test_auprc": 0.23459308093173373,
+      "best_val_auroc": 0.92
+    },
+    {
+      "slug": "Specific__hESC__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/hESC/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/hESC/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__hESC__1000",
+      "exit_code": 0,
+      "test_auroc": 0.9251487214555555,
+      "test_auprc": 0.7030587870011092,
+      "best_val_auroc": 0.9302366534849233
+    },
+    {
+      "slug": "Specific__hESC__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/hESC/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/hESC/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__hESC__500",
+      "exit_code": 0,
+      "test_auroc": 0.9379602200330102,
+      "test_auprc": 0.7021553458406322,
+      "best_val_auroc": 0.9328131091149106
+    },
+    {
+      "slug": "Specific__hHEP__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/hHEP/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/hHEP/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__hHEP__1000",
+      "exit_code": 0,
+      "test_auroc": 0.9238354535496792,
+      "test_auprc": 0.8689526340588993,
+      "best_val_auroc": 0.923562279268357
+    },
+    {
+      "slug": "Specific__hHEP__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/hHEP/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/hHEP/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__hHEP__500",
+      "exit_code": 0,
+      "test_auroc": 0.9177898805699191,
+      "test_auprc": 0.8631654076294424,
+      "best_val_auroc": 0.9098565295181593
+    },
+    {
+      "slug": "Specific__mDC__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mDC/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mDC/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__mDC__1000",
+      "exit_code": 0,
+      "test_auroc": 0.9821205922152811,
+      "test_auprc": 0.7006624495458745,
+      "best_val_auroc": 0.9856540351989853
+    },
+    {
+      "slug": "Specific__mDC__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mDC/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mDC/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__mDC__500",
+      "exit_code": 0,
+      "test_auroc": 0.9143221499279076,
+      "test_auprc": 0.35796089152877403,
+      "best_val_auroc": 0.9346242794518657
+    },
+    {
+      "slug": "Specific__mESC__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mESC/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mESC/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__mESC__1000",
+      "exit_code": 0,
+      "test_auroc": 0.9571856594140409,
+      "test_auprc": 0.9132239880840077,
+      "best_val_auroc": 0.9567999439572135
+    },
+    {
+      "slug": "Specific__mESC__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mESC/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mESC/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__mESC__500",
+      "exit_code": 0,
+      "test_auroc": 0.9492761002091542,
+      "test_auprc": 0.897702349087913,
+      "best_val_auroc": 0.9514266287653074
+    },
+    {
+      "slug": "Specific__mHSC-E__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mHSC-E/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mHSC-E/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__mHSC-E__1000",
+      "exit_code": 0,
+      "test_auroc": 0.9531232120791672,
+      "test_auprc": 0.9627393882556669,
+      "best_val_auroc": 0.9559859737975259
+    },
+    {
+      "slug": "Specific__mHSC-E__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mHSC-E/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mHSC-E/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__mHSC-E__500",
+      "exit_code": 0,
+      "test_auroc": 0.9406679675838937,
+      "test_auprc": 0.9554436485345219,
+      "best_val_auroc": 0.9445103053832158
+    },
+    {
+      "slug": "Specific__mHSC-GM__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mHSC-GM/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mHSC-GM/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__mHSC-GM__1000",
+      "exit_code": 0,
+      "test_auroc": 0.9589799413129239,
+      "test_auprc": 0.9647376576970077,
+      "best_val_auroc": 0.9573478896509099
+    },
+    {
+      "slug": "Specific__mHSC-GM__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mHSC-GM/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mHSC-GM/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__mHSC-GM__500",
+      "exit_code": 0,
+      "test_auroc": 0.9421127613487263,
+      "test_auprc": 0.9477878242671935,
+      "best_val_auroc": 0.9545972100641598
+    },
+    {
+      "slug": "Specific__mHSC-L__1000",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mHSC-L/TFs+1000",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mHSC-L/TFs+1000/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__mHSC-L__1000",
+      "exit_code": 0,
+      "test_auroc": 0.9121394198358007,
+      "test_auprc": 0.8997607868501243,
+      "best_val_auroc": 0.9086408774270045
+    },
+    {
+      "slug": "Specific__mHSC-L__500",
+      "data_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mHSC-L/TFs+500",
+      "split_dir": "/home/rui.cao/deeplearning/benchmark/Dataset/Benchmark Dataset/Specific Dataset/mHSC-L/TFs+500/Train_validation_test",
+      "run_dir": "/home/rui.cao/deeplearning/Graph_Transformer/Specific__mHSC-L__500",
+      "exit_code": 0,
+      "test_auroc": 0.9110842914900826,
+      "test_auprc": 0.9074919091189498,
+      "best_val_auroc": 0.9104509886749945
+    }
+  ]
+}

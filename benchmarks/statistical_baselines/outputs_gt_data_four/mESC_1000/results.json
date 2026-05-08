@@ -1,0 +1,31 @@
+{
+  "slug": "mESC_1000",
+  "data_dir": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/data/mESC/TFs+1000",
+  "split_dir": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/data/Train_validation_test/mESC_1000",
+  "methods": {
+    "pcc": {
+      "val_auroc": 0.5458191367400782,
+      "val_auprc": 0.33520574357709626,
+      "test_auroc": 0.5442939110921807,
+      "test_auprc": 0.33229903330505917,
+      "seconds": 0.036027624970301986
+    },
+    "mi": {
+      "val_auroc": 0.5454740447802103,
+      "val_auprc": 0.33019840564342956,
+      "test_auroc": 0.5478116396290872,
+      "test_auprc": 0.33201466049921796,
+      "seconds": 51.50362537504407
+    },
+    "grnboost2": {
+      "val_auroc": 0.5144752976793605,
+      "val_auprc": 0.30984041025298803,
+      "test_auroc": 0.5220241651876103,
+      "test_auprc": 0.31092897196712915,
+      "seconds": 30.53763454098953,
+      "n_edges_inferred": 217282
+    }
+  },
+  "seed": 42,
+  "standardize_expression": true
+}

@@ -1,0 +1,61 @@
+{
+  "meta": {
+    "suite": "statistical_baselines_gt_data_four",
+    "started_utc": "2026-05-07T01:29:09.172530+00:00",
+    "gt_data_root": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/data",
+    "output_root": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/benchmarks/statistical_baselines/outputs_gt_data_four",
+    "methods": [
+      "grnboost2",
+      "mi",
+      "pcc"
+    ],
+    "seed": 42,
+    "standardize_expression": true,
+    "n_tasks": 4,
+    "dry_run": false,
+    "failures": 0,
+    "finished_utc": "2026-05-07T01:29:09.172555+00:00"
+  },
+  "runs": [
+    {
+      "slug": "hESC_500",
+      "run_dir": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/benchmarks/statistical_baselines/outputs_gt_data_four/hESC_500",
+      "grnboost2_test_auroc": 0.48566919629302246,
+      "grnboost2_test_auprc": 0.14556000796136676,
+      "mi_test_auroc": 0.49498182019953374,
+      "mi_test_auprc": 0.14420379924377533,
+      "pcc_test_auroc": 0.5103064333663312,
+      "pcc_test_auprc": 0.15166626354016088
+    },
+    {
+      "slug": "hESC_1000",
+      "run_dir": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/benchmarks/statistical_baselines/outputs_gt_data_four/hESC_1000",
+      "grnboost2_test_auroc": 0.4978592825796232,
+      "grnboost2_test_auprc": 0.14753306328876933,
+      "mi_test_auroc": 0.5043684434961386,
+      "mi_test_auprc": 0.1495819637901056,
+      "pcc_test_auroc": 0.5266884959267899,
+      "pcc_test_auprc": 0.1588282495561103
+    },
+    {
+      "slug": "mESC_500",
+      "run_dir": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/benchmarks/statistical_baselines/outputs_gt_data_four/mESC_500",
+      "grnboost2_test_auroc": 0.515380149393579,
+      "grnboost2_test_auprc": 0.3116404582904573,
+      "mi_test_auroc": 0.5284275856246082,
+      "mi_test_auprc": 0.3213627970406535,
+      "pcc_test_auroc": 0.5305522688308445,
+      "pcc_test_auprc": 0.3241661184506526
+    },
+    {
+      "slug": "mESC_1000",
+      "run_dir": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/benchmarks/statistical_baselines/outputs_gt_data_four/mESC_1000",
+      "grnboost2_test_auroc": 0.5220241651876103,
+      "grnboost2_test_auprc": 0.31092897196712915,
+      "mi_test_auroc": 0.5478116396290872,
+      "mi_test_auprc": 0.33201466049921796,
+      "pcc_test_auroc": 0.5442939110921807,
+      "pcc_test_auprc": 0.33229903330505917
+    }
+  ]
+}

@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """
-Stage 1: Prior graph — ``correlation``: Pearson |r| top-k; ``gold``: TF/Target edges from ``--gold_network_file``;
-         ``gold_pearson``: same **directed** gold edges, ``edata['w']`` from Pearson r(regulator, target) across cells.
+Stage 1: Prior graph — ``correlation``: Pearson |r| top-k; ``gold`` / ``gold_pearson``: edges from ``--gold_network_file``
+         (**gene symbols** in CSV, matching expression row names); ``gold_pearson`` sets ``edata['w']`` from Pearson r.
+         ``train_pos_pearson``: **only** ``Train_set`` rows with Label=1 as directed edges; weights from Pearson r (no CSV).
          ``edata['w']``: Pearson r (or min–max normalized); self-loops 1.0.
-         For ``prior_graph=gold`` or ``gold_pearson``, ``edata['dir']`` is +1 on TF→target edges and −1 on mirrored edges
+         For ``prior_graph=gold``, ``gold_pearson``, or ``train_pos_pearson``, ``edata['dir']`` is +1 on TF→target edges and −1 on mirrored edges
          (unless ``--no_edge_dir_attn``); SparseMHA adds ``edge_dir_scale * dir`` to logits.
-Stage 2: Gene encoder + GraphTransformer + LinkPredictor. Default: GeneExpressionTransformer(expression + lap_pe).
-         Use ``--expr_encoder scgpt`` for scGPT-only; ``scgpt_concat`` for expression Transformer + concat(scGPT) + fuse
-         (requires ``--scgpt_emb_pt`` or ``--scgpt_model_dir``; see scripts/precompute_scgpt_gene_emb.py).
+Stage 2: Gene encoder + GraphTransformer + LinkPredictor. Defaults follow best hESC_500 tune (``scgpt_concat`` + ``gold_pearson``).
+         Use ``--expr_encoder transformer`` for expression-only; ``scgpt`` for scGPT-only (see ``--scgpt_emb_pt`` / ``--scgpt_model_dir``).
          SparseMHA adds learnable-scaled ``w`` to attention logits unless ``--no_edge_weight_attn``.
-         Optional gene-symbol embeddings (--gene_bert_emb): ``--gene_bert_fusion additive`` (default)
-         adds semantics inside GraphTransformer; ``link_concat`` fuses projected BioBERT only at the
-         link head as ``[h_i,h_j,sem_i,sem_j]`` (GT uses expression + Lap PE only).
 
 Example (from this repo root; ``src/`` holds GraphTransformer + LinkPredictor, no PYTHONPATH needed):
   python train_grn_graph.py \\
@@ -24,12 +21,18 @@ Registered datasets (``--dataset NAME`` sets ``data_dir`` + ``split_dir``): hESC
 Train all four and write ``all_results.json`` under the output root:
   python train_grn_graph.py --train_all --output_dir out_multi ...
 
+Paper-style splits live under a sibling folder name (e.g. ``Train_validation_test_gnnlink_paper``).
+Use ``--split_subdir Train_validation_test_gnnlink_paper`` so any ``--split_dir`` / registry path
+that contains a ``Train_validation_test`` segment is rewritten (also works for BEELINE leaves like
+``.../TFs+500/Train_validation_test``).
+
 Programmatic single run: ``from train_grn_graph import train_grn_dataset`` then ``train_grn_dataset("hESC_500", epochs=50)``.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import sys
 from argparse import Namespace
 
@@ -81,8 +84,12 @@ from model import GraphTransformer  # noqa: E402
 from utils import LinkPredictor, evaluate  # noqa: E402
 
 from correlation_graph import build_correlation_graph  # noqa: E402
-from gold_network_graph import build_gold_network_graph, build_gold_pearson_graph  # noqa: E402
-from grn_data import load_edge_split, load_expression_for_grn, load_gene_bert_embeddings  # noqa: E402
+from gold_network_graph import (  # noqa: E402
+    build_gold_network_graph,
+    build_gold_pearson_graph,
+    build_train_positive_pearson_graph,
+)
+from grn_data import load_edge_split, load_expression_for_grn  # noqa: E402
 from grn_model import (  # noqa: E402
     GeneExpressionTransformer,
     ScGPTExprConcatEncoder,
@@ -102,26 +109,40 @@ DATASET_REGISTRY: dict[str, tuple[str, str]] = {
 }
 DATASET_ORDER = ("hESC_500", "hESC_1000", "mESC_500", "mESC_1000")
 
-
-def resolve_gene_bert_emb(data_dir: Path, gene_bert_emb: str) -> str:
-    """If ``gene_bert_emb`` is set, use it; else use ``data_dir/gene_name_biobert.pt`` if that file exists."""
-    if gene_bert_emb.strip():
-        return gene_bert_emb.strip()
-    p = data_dir / "gene_name_biobert.pt"
-    return str(p) if p.is_file() else ""
+_SPLIT_SEG_PATTERN = re.compile(r"(^|[\\/])Train_validation_test(?=[\\/]|$)")
 
 
-def semantic_features(
-    n_genes: int,
-    in_dim: int,
-    device: torch.device,
-    dtype: torch.dtype,
-    gene_bert_raw: Optional[torch.Tensor],
-    bert_proj: Optional[nn.Module],
-) -> torch.Tensor:
-    if bert_proj is not None and gene_bert_raw is not None:
-        return bert_proj(gene_bert_raw)
-    return torch.zeros(n_genes, in_dim, device=device, dtype=dtype)
+def apply_split_subdir(split_dir_str: str, subdir: str) -> str:
+    """Replace path segment ``Train_validation_test`` with *subdir* (first occurrence only)."""
+    subdir = (subdir or "").strip() or "Train_validation_test"
+    if subdir == "Train_validation_test":
+        return split_dir_str
+
+    def repl(m: re.Match[str]) -> str:
+        return m.group(1) + subdir
+
+    new_s, n = _SPLIT_SEG_PATTERN.subn(repl, split_dir_str, count=1)
+    return new_s if n else split_dir_str
+
+
+# argparse defaults point here so ``--dataset mESC_500`` (etc.) can remap to sibling files under that data_dir.
+_DEFAULT_TUNE_GOLD_REL = "data/hESC/TFs+500/BL--network.csv"
+_DEFAULT_TUNE_SCGPT_REL = "data/hESC/TFs+500/scgpt_gene_emb.pt"
+
+
+def _remap_tune_default_paths(args: Namespace) -> None:
+    """Keep best-tune defaults portable: same basenames under whatever ``--data_dir`` is active."""
+    data_dir = Path(args.data_dir)
+    if (
+        args.prior_graph in ("gold", "gold_pearson")
+        and args.gold_network_file.strip() == _DEFAULT_TUNE_GOLD_REL
+    ):
+        args.gold_network_file = str(data_dir / "BL--network.csv")
+    if (
+        args.expr_encoder in ("scgpt", "scgpt_concat")
+        and args.scgpt_emb_pt.strip() == _DEFAULT_TUNE_SCGPT_REL
+    ):
+        args.scgpt_emb_pt = str(data_dir / "scgpt_gene_emb.pt")
 
 
 def parse_args(argv: Optional[list[str]] = None):
@@ -142,24 +163,42 @@ def parse_args(argv: Optional[list[str]] = None):
     )
     p.add_argument("--data_dir", type=str, default="data/hESC/TFs+500")
     p.add_argument("--split_dir", type=str, default="data/Train_validation_test/hESC_500")
+    p.add_argument(
+        "--split_subdir",
+        type=str,
+        default="Train_validation_test",
+        metavar="NAME",
+        help="Rewrite split path: replace segment Train_validation_test with this folder name "
+        "(e.g. Train_validation_test_gnnlink_paper). Ignored when unchanged from default.",
+    )
     p.add_argument("--output_dir", type=str, default="out_grn_gt")
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--edge_batch_size", type=int, default=4096)
-    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument(
+        "--lr",
+        type=float,
+        default=3e-4,
+        help="Default 3e-4 matches best hESC_500 tune (summary.csv test_auroc ~0.945).",
+    )
     p.add_argument(
         "--expr_encoder",
         type=str,
         choices=("transformer", "scgpt", "scgpt_concat"),
-        default="transformer",
-        help="transformer: Linear(n_cells)+TransformerEncoder (default). "
+        default="scgpt_concat",
+        help="transformer: Linear(n_cells)+TransformerEncoder. "
         "scgpt: scGPT token emb + proj (+ optional refine). "
         "scgpt_concat: same expression Transformer as transformer, concat with proj(scGPT), Linear fuse.",
     )
-    p.add_argument("--d_model", type=int, default=128, help="GT in_dim = lap_pe k; expression encoder output dim")
+    p.add_argument(
+        "--d_model",
+        type=int,
+        default=768,
+        help="GT in_dim = lap_pe k; expression encoder output dim (default from best tune).",
+    )
     p.add_argument(
         "--nhead",
         type=int,
-        default=4,
+        default=8,
         help="GeneExpressionTransformer heads (expr_encoder=transformer or scgpt_concat; "
         "for scgpt only when --scgpt_refine_layers>0)",
     )
@@ -180,8 +219,8 @@ def parse_args(argv: Optional[list[str]] = None):
     p.add_argument(
         "--scgpt_emb_pt",
         type=str,
-        default="",
-        help="Precomputed .pt from scripts/precompute_scgpt_gene_emb.py (overrides --scgpt_model_dir).",
+        default=_DEFAULT_TUNE_SCGPT_REL,
+        help="Precomputed .pt from scripts/precompute_scgpt_gene_emb.py (overrides --scgpt_model_dir). Empty to disable.",
     )
     p.add_argument(
         "--scgpt_refine_layers",
@@ -196,10 +235,15 @@ def parse_args(argv: Optional[list[str]] = None):
     p.add_argument(
         "--gt_hidden_dim",
         type=int,
-        default=80,
+        default=128,
         help="GraphTransformer hidden size; must be divisible by --gt_num_heads",
     )
-    p.add_argument("--gt_num_layers", type=int, default=6)
+    p.add_argument(
+        "--gt_num_layers",
+        type=int,
+        default=6,
+        help="GraphTransformer layers (default 6 matches best hESC_500 tune).",
+    )
     p.add_argument(
         "--gt_num_heads",
         type=int,
@@ -215,50 +259,31 @@ def parse_args(argv: Optional[list[str]] = None):
     p.add_argument(
         "--prior_graph",
         type=str,
-        choices=("correlation", "gold", "gold_pearson"),
-        default="correlation",
+        choices=("correlation", "gold", "gold_pearson", "train_pos_pearson"),
+        default="gold_pearson",
         help="correlation: Pearson |r| top-k graph. gold: reference network from --gold_network_file (optional CSV weights). "
-        "gold_pearson: gold edges + Pearson r as weights (directed structure via edata['dir']).",
+        "gold_pearson: gold edges + Pearson r as weights (directed structure via edata['dir']). "
+        "train_pos_pearson: only Train_set Label=1 edges + Pearson r (ignores --gold_network_file; aligns with train-only adjacency).",
     )
     p.add_argument(
         "--gold_network_file",
         type=str,
-        default="",
-        help="prior_graph=gold or gold_pearson: CSV with TF/Target or Gene1/Gene2 (or Source/Target, etc.); "
-        "see gold_network_graph.build_gold_network_graph / build_gold_pearson_graph.",
-    )
-    p.add_argument(
-        "--gold_network_gene_symbols",
-        action="store_true",
-        help="prior_graph=gold or gold_pearson: parse TF/Target only as gene symbols (do not interpret integers as indices).",
+        default=_DEFAULT_TUNE_GOLD_REL,
+        help="prior_graph=gold or gold_pearson: CSV with TF/Target or Gene1/Gene2 (etc.); "
+        "endpoint values must be gene symbols matching expression row names (not integer indices). "
+        "See gold_network_graph.build_gold_network_graph / build_gold_pearson_graph.",
     )
     p.add_argument("--no_cuda", action="store_true")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
-        "--gene_bert_emb",
-        type=str,
-        default="",
-        help="Path to .pt from scripts/encode_gene_symbols.py (empty = try data_dir/gene_name_biobert.pt if present, "
-        "else zero semantic). Same path is reused for every run when --train_all unless you rely on per-dir auto.",
-    )
-    p.add_argument(
-        "--gene_bert_fusion",
-        type=str,
-        choices=("additive", "link_concat"),
-        default="additive",
-        help="additive: BioBERT in GraphTransformer (encoder+PE+sem). link_concat: GT uses expr+PE only; "
-        "BioBERT projected features concat at LinkPredictor [h_i,h_j,sem_i,sem_j] (requires --gene_bert_emb).",
-    )
-    p.add_argument(
         "--no_edge_weight_attn",
         action="store_true",
-        help="Disable edge importance in SparseMHA (ablation). Default: add learnable-scaled edata['w'] to logits "
-        "(Pearson r or GRNBoost-normalized importance).",
+        help="Disable edge importance in SparseMHA (ablation). Default: add learnable-scaled edata['w'] to logits.",
     )
     p.add_argument(
         "--no_edge_dir_attn",
         action="store_true",
-        help="For prior_graph=gold or gold_pearson: do not add learnable edata['dir'] (±1) bias in SparseMHA. "
+        help="For prior_graph=gold, gold_pearson, or train_pos_pearson: do not add learnable edata['dir'] (±1) bias in SparseMHA. "
         "Ignored for correlation prior (no dir field).",
     )
     p.add_argument(
@@ -291,35 +316,18 @@ def logits_all_edges(
     pe: torch.Tensor,
     edge_index: torch.Tensor,
     chunk: int,
-    gene_bert_raw: Optional[torch.Tensor],
-    bert_proj: Optional[nn.Module],
-    in_dim: int,
-    gene_bert_fusion: str,
 ) -> torch.Tensor:
     seq_model.eval()
     gt_model.eval()
     predictor.eval()
-    n_genes = g.num_nodes()
-    sem = semantic_features(
-        n_genes, in_dim, gene_expr.device, gene_expr.dtype, gene_bert_raw, bert_proj
-    )
-    use_semantic_gt = not (
-        gene_bert_fusion == "link_concat" and bert_proj is not None
-    )
-    sem_for_pred = (
-        sem if gene_bert_fusion == "link_concat" and bert_proj is not None else None
-    )
     h_seq = seq_model(gene_expr, pe)
     g.ndata["feat"] = h_seq
     g.ndata["PE"] = pe
-    g.ndata["semantic"] = sem
-    h = gt_model(g, h_seq, pe, sem, use_semantic_gt)
+    h = gt_model(g, h_seq, pe)
     outs = []
     e = edge_index.size(1)
     for s in range(0, e, chunk):
-        outs.append(
-            predictor(h, edge_index[:, s : s + chunk], sem_for_pred).squeeze(-1)
-        )
+        outs.append(predictor(h, edge_index[:, s : s + chunk]).squeeze(-1))
     return torch.cat(outs, dim=0)
 
 
@@ -373,6 +381,8 @@ def compute_test_metrics(
 
 def run_training(args: Namespace) -> dict:
     """Run one training job. ``args`` is an argparse namespace (see :func:`parse_args`). Returns results dict."""
+    args.split_dir = apply_split_subdir(args.split_dir, getattr(args, "split_subdir", "Train_validation_test"))
+    _remap_tune_default_paths(args)
     if args.expr_encoder in ("transformer", "scgpt_concat") and args.d_model % args.nhead != 0:
         raise SystemExit(
             f"--d_model ({args.d_model}) must be divisible by --nhead ({args.nhead})"
@@ -425,7 +435,6 @@ def run_training(args: Namespace) -> dict:
             g = build_gold_network_graph(
                 Path(args.gold_network_file.strip()),
                 gene_names,
-                force_gene_symbols=args.gold_network_gene_symbols,
             )
         except (FileNotFoundError, ValueError, RuntimeError) as e:
             raise SystemExit(str(e)) from e
@@ -439,34 +448,22 @@ def run_training(args: Namespace) -> dict:
                 Path(args.gold_network_file.strip()),
                 gene_names,
                 expr_cpu,
-                force_gene_symbols=args.gold_network_gene_symbols,
             )
         except (FileNotFoundError, ValueError, RuntimeError) as e:
+            raise SystemExit(str(e)) from e
+    elif args.prior_graph == "train_pos_pearson":
+        try:
+            g = build_train_positive_pearson_graph(
+                train_ei.detach().cpu(),
+                train_y.detach().cpu(),
+                expr_cpu,
+            )
+        except (ValueError, RuntimeError) as e:
             raise SystemExit(str(e)) from e
     g = g.to(device)
     with torch.no_grad():
         pe = dgl.lap_pe(g, k=in_dim, padding=True)
     pe = pe.to(device=device, dtype=gene_expr.dtype)
-
-    gene_bert_raw: Optional[torch.Tensor] = None
-    bert_proj: Optional[nn.Linear] = None
-    bert_dim: Optional[int] = None
-    emb_path = resolve_gene_bert_emb(data_dir, args.gene_bert_emb)
-    if emb_path:
-        emb_p = Path(emb_path)
-        if not emb_p.is_file():
-            raise SystemExit(f"--gene_bert_emb not found: {emb_p}")
-        raw_cpu = load_gene_bert_embeddings(emb_p, gene_names)
-        bert_dim = raw_cpu.shape[1]
-        gene_bert_raw = raw_cpu.to(device=device, dtype=gene_expr.dtype)
-        bert_proj = nn.Linear(bert_dim, in_dim).to(device)
-
-    use_link_concat = args.gene_bert_fusion == "link_concat" and bert_proj is not None
-    if args.gene_bert_fusion == "link_concat" and bert_proj is None:
-        print(
-            "Note: --gene_bert_fusion=link_concat needs --gene_bert_emb; using additive fusion.",
-            flush=True,
-        )
 
     scgpt_dim: Optional[int] = None
     if args.expr_encoder in ("scgpt", "scgpt_concat"):
@@ -515,7 +512,10 @@ def run_training(args: Namespace) -> dict:
             dropout=args.dropout,
         ).to(device)
     use_edge_w = not args.no_edge_weight_attn
-    use_dir_attn = args.prior_graph in ("gold", "gold_pearson") and not args.no_edge_dir_attn
+    use_dir_attn = (
+        args.prior_graph in ("gold", "gold_pearson", "train_pos_pearson")
+        and not args.no_edge_dir_attn
+    )
     gt_model = GraphTransformer(
         in_dim,
         args.gt_hidden_dim,
@@ -524,9 +524,7 @@ def run_training(args: Namespace) -> dict:
         use_edge_weight_attn=use_edge_w,
         use_directed_edge_bias=use_dir_attn,
     ).to(device)
-    predictor = LinkPredictor(
-        args.gt_hidden_dim, semantic_dim=in_dim if use_link_concat else None
-    ).to(device)
+    predictor = LinkPredictor(args.gt_hidden_dim).to(device)
 
     n_pos = float((train_y == 1).sum().item())
     n_neg = float((train_y == 0).sum().item())
@@ -538,8 +536,6 @@ def run_training(args: Namespace) -> dict:
         + list(gt_model.parameters())
         + list(predictor.parameters())
     )
-    if bert_proj is not None:
-        params += list(bert_proj.parameters())
     opt = torch.optim.AdamW(params, lr=args.lr)
 
     val_pos = val_ei[:, val_y == 1]
@@ -563,16 +559,10 @@ def run_training(args: Namespace) -> dict:
         )
         + f" | prior={args.prior_graph} edges={n_edges_graph} | "
         f"train edges={n_train} (pos={int(n_pos)} neg={int(n_neg)}) | pos_weight={pos_weight.item():.3f}"
-        + (f" | gene_bert_emb D={bert_dim}" if bert_dim else " | gene_bert_emb (none)")
-        + (
-            f" | bert_fusion={args.gene_bert_fusion}"
-            if bert_dim
-            else " | bert_fusion=n/a"
-        )
         + f" | edge_weight_attn={'on' if use_edge_w else 'off'}"
         + (
             f" | edge_dir_attn={'on' if use_dir_attn else 'off'}"
-            if args.prior_graph in ("gold", "gold_pearson")
+            if args.prior_graph in ("gold", "gold_pearson", "train_pos_pearson")
             else ""
         )
     )
@@ -585,8 +575,6 @@ def run_training(args: Namespace) -> dict:
         seq_model.train()
         gt_model.train()
         predictor.train()
-        if bert_proj is not None:
-            bert_proj.train()
         idx_perm = idx_perm[torch.randperm(n_train)]
         epoch_loss = 0.0
         n_batches = 0
@@ -595,12 +583,9 @@ def run_training(args: Namespace) -> dict:
             ei = train_ei[:, sel]
             y = train_y[sel]
             opt.zero_grad()
-            sem = semantic_features(
-                n_genes, in_dim, device, gene_expr.dtype, gene_bert_raw, bert_proj
-            )
             h_seq = seq_model(gene_expr, pe)
-            h = gt_model(g, h_seq, pe, sem, not use_link_concat)
-            logits = predictor(h, ei, sem if use_link_concat else None).squeeze(-1)
+            h = gt_model(g, h_seq, pe)
+            logits = predictor(h, ei).squeeze(-1)
             loss = loss_fn(logits, y)
             loss.backward()
             opt.step()
@@ -610,30 +595,14 @@ def run_training(args: Namespace) -> dict:
         seq_model.eval()
         gt_model.eval()
         predictor.eval()
-        if bert_proj is not None:
-            bert_proj.eval()
         with torch.no_grad():
             h_seq = seq_model(gene_expr, pe)
-            sem = semantic_features(
-                n_genes, in_dim, device, gene_expr.dtype, gene_bert_raw, bert_proj
-            )
         g.ndata["feat"] = h_seq
         g.ndata["PE"] = pe
-        g.ndata["semantic"] = sem
-        v_auroc, v_ap, _, _ = evaluate(
-            gt_model,
-            predictor,
-            g,
-            val_pos,
-            val_neg,
-            use_semantic_gt=not use_link_concat,
-            sem_link=sem if use_link_concat else None,
-        )
+        v_auroc, v_ap, _, _ = evaluate(gt_model, predictor, g, val_pos, val_neg)
         seq_model.train()
         gt_model.train()
         predictor.train()
-        if bert_proj is not None:
-            bert_proj.train()
 
         history.append(
             {
@@ -663,23 +632,22 @@ def run_training(args: Namespace) -> dict:
                     "gt_num_layers": args.gt_num_layers,
                     "top_k": args.top_k,
                     "n_edges_graph": int(n_edges_graph),
-                    "use_gene_bert": bool(bert_proj is not None),
-                    "bert_dim": bert_dim,
-                    "gene_bert_fusion": args.gene_bert_fusion,
                     "use_edge_weight_attn": use_edge_w,
                     "prior_graph": args.prior_graph,
                     "gold_network_file": str(Path(args.gold_network_file).resolve())
                     if args.prior_graph in ("gold", "gold_pearson") and args.gold_network_file.strip()
                     else "",
-                    "gold_network_gene_symbols": bool(args.gold_network_gene_symbols),
+                    "gold_network_endpoints": (
+                        "gene_symbol"
+                        if args.prior_graph in ("gold", "gold_pearson")
+                        else ("train_positive_indices" if args.prior_graph == "train_pos_pearson" else "")
+                    ),
                     "use_directed_edge_attn": use_dir_attn,
                     "nhead": args.nhead,
                     "num_layers": args.num_layers,
                     "dim_feedforward": args.dim_feedforward,
                 },
             }
-            if bert_proj is not None:
-                ckpt["bert_proj"] = bert_proj.state_dict()
             torch.save(ckpt, out_dir / "best.pt")
 
         if epoch == 1 or epoch % 5 == 0 or epoch == args.epochs:
@@ -690,14 +658,9 @@ def run_training(args: Namespace) -> dict:
 
     ckpt = torch.load(out_dir / "best.pt", map_location=device)
     meta = ckpt.get("meta", {})
-    fusion_saved = meta.get("gene_bert_fusion", "additive")
-    use_link_concat_eval = fusion_saved == "link_concat" and "bert_proj" in ckpt
     use_dir_eval = meta.get("use_directed_edge_attn", False)
     use_ew_eval = meta.get("use_edge_weight_attn", True)
-    predictor = LinkPredictor(
-        int(meta.get("gt_hidden_dim", args.gt_hidden_dim)),
-        semantic_dim=in_dim if use_link_concat_eval else None,
-    ).to(device)
+    predictor = LinkPredictor(int(meta.get("gt_hidden_dim", args.gt_hidden_dim))).to(device)
     gt_model = GraphTransformer(
         in_dim,
         int(meta.get("gt_hidden_dim", args.gt_hidden_dim)),
@@ -747,23 +710,6 @@ def run_training(args: Namespace) -> dict:
         seq_model.load_state_dict(sd_seq)
     gt_model.load_state_dict(ckpt["gt_model"])
     predictor.load_state_dict(ckpt["predictor"])
-    if "bert_proj" in ckpt:
-        bd = meta.get("bert_dim")
-        if bd is None:
-            raise SystemExit("checkpoint has bert_proj but meta.bert_dim missing")
-        bert_proj = nn.Linear(int(bd), in_dim).to(device)
-        bert_proj.load_state_dict(ckpt["bert_proj"])
-        bert_proj.eval()
-        if gene_bert_raw is None:
-            if not emb_path:
-                raise SystemExit(
-                    "Checkpoint uses gene BioBERT; re-run with --gene_bert_emb pointing to the same .pt file"
-                )
-            raw_cpu = load_gene_bert_embeddings(Path(emb_path), gene_names)
-            gene_bert_raw = raw_cpu.to(device=device, dtype=gene_expr.dtype)
-    else:
-        bert_proj = None
-        gene_bert_raw = None
 
     te_logits = logits_all_edges(
         seq_model,
@@ -774,10 +720,6 @@ def run_training(args: Namespace) -> dict:
         pe,
         test_ei,
         args.edge_batch_size,
-        gene_bert_raw,
-        bert_proj,
-        in_dim,
-        fusion_saved,
     )
     test_metrics = compute_test_metrics(
         test_y.cpu().numpy(),
@@ -830,7 +772,7 @@ def train_grn_dataset(dataset_key: str, **kwargs) -> dict:
         setattr(args, k, v)
     dd, sd = DATASET_REGISTRY[dataset_key]
     args.data_dir = dd
-    args.split_dir = sd
+    args.split_dir = sd if "split_dir" not in kwargs else args.split_dir
     args.dataset = dataset_key
     if "output_dir" not in kwargs:
         args.output_dir = str(_ROOT / "out_grn" / dataset_key)

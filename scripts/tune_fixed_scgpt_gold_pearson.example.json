@@ -1,0 +1,6 @@
+{
+  "expr_encoder": "scgpt_concat",
+  "scgpt_emb_pt": "data/hESC/TFs+500/scgpt_gene_emb.pt",
+  "prior_graph": "gold_pearson",
+  "gold_network_file": "data/hESC/TFs+500/BL--network.csv"
+}

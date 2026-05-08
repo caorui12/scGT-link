@@ -1,0 +1,17 @@
+{
+  "data_dir": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/data/hESC/TFs+500",
+  "split_dir": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/data/Train_validation_test/hESC_500",
+  "n_cells": 758,
+  "n_genes": 910,
+  "val_edges": 3087,
+  "test_edges": 7142,
+  "methods": {
+    "grnboost2": {
+      "val_auroc": 0.49845405067166815,
+      "val_auprc": 0.15237265790456989,
+      "test_auroc": 0.4781649429218277,
+      "test_auprc": 0.1442494146933333,
+      "seconds": 25.7
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "data_dir": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/data/hESC/TFs+500",
+  "split_dir": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/data/Train_validation_test/hESC_500",
+  "n_cells": 758,
+  "n_genes": 910,
+  "val_edges": 3087,
+  "test_edges": 7142,
+  "methods": {
+    "pcc": {
+      "val_auroc": 0.5443063388941778,
+      "test_auroc": 0.5072691303283772,
+      "seconds": 0.02
+    },
+    "mi": {
+      "val_auroc": 0.5323018081249341,
+      "test_auroc": 0.49717906595860073,
+      "seconds": 8.5
+    },
+    "cnnc": {
+      "val_auroc": 0.5745033805093267,
+      "test_auroc": 0.5748715774059311,
+      "seconds": null,
+      "note": "From CNNC keras results.json; val_auroc is best val AUROC during training (same role as Graph_Transformer best_val_auroc), not a static score like PCC/MI.",
+      "source": "/Users/drruicao/Desktop/deeplearning/CNNC/xwhole_saved_models_T_32-32-64-64-128-128-512_e25/results.json"
+    }
+  }
+}

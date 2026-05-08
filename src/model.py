@@ -160,9 +160,6 @@ class GraphTransformer(nn.Module):
 
         self.pos_linear=nn.Linear(in_dim,hidden_dim)
 
-        # BioBERT (or other) gene semantics projected to hidden_dim; same slot as former global_emb
-        self.semantic_linear = nn.Linear(in_dim, hidden_dim)
-
         # stack graph transformer layers
         self.layers=nn.ModuleList(
             [
@@ -176,13 +173,8 @@ class GraphTransformer(nn.Module):
             ]
         )
 
-    def forward(self, g, X, pos_enc, semantic_feat, use_semantic: bool = True):
-        # semantic_feat: (N, in_dim). If use_semantic is False, skip BioBERT branch in GT
-        # (for link_concat fusion: semantics go to LinkPredictor only).
+    def forward(self, g, X, pos_enc):
         h = self.encoder(X) + self.pos_linear(pos_enc)
-        if use_semantic:
-            h = h + self.semantic_linear(semantic_feat)
-
         for layer in self.layers:
             h=layer(g,h)
 

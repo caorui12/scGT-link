@@ -1,0 +1,31 @@
+{
+  "slug": "hESC_1000",
+  "data_dir": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/data/hESC/TFs+1000",
+  "split_dir": "/Users/drruicao/Desktop/deeplearning/Graph_Transformer/data/Train_validation_test/hESC_1000",
+  "methods": {
+    "pcc": {
+      "val_auroc": 0.5111687812379854,
+      "val_auprc": 0.15840241247908407,
+      "test_auroc": 0.5266884959267899,
+      "test_auprc": 0.1588282495561103,
+      "seconds": 0.021940374979749322
+    },
+    "mi": {
+      "val_auroc": 0.5118457186796288,
+      "val_auprc": 0.1561904423924172,
+      "test_auroc": 0.5043684434961386,
+      "test_auprc": 0.1495819637901056,
+      "seconds": 24.14113745803479
+    },
+    "grnboost2": {
+      "val_auroc": 0.5161941492283187,
+      "val_auprc": 0.154479714173125,
+      "test_auroc": 0.4978592825796232,
+      "test_auprc": 0.14753306328876933,
+      "seconds": 25.77288716705516,
+      "n_edges_inferred": 162001
+    }
+  },
+  "seed": 42,
+  "standardize_expression": true
+}

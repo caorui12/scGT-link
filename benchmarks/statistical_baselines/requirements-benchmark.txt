@@ -1,0 +1,12 @@
+# Statistical baseline suite (run_benchmark_baselines_suite.py)
+numpy>=1.20
+pandas>=1.3
+scikit-learn>=1.0
+scipy>=1.7
+# Pin Dask together with arboreto to avoid "Must supply at least one delayed object" (arboreto#42).
+dask[distributed]>=2023.5,<2024.8
+distributed>=2023.5,<2024.8
+arboreto>=0.1.6
+
+# GRNBoost2 uses Dask delayed graphs. Newer Dask/dask-expr can break arboreto (pySCENIC#561).
+# Also set in code: DASK_EXPR_ENABLED=false before importing arboreto.

@@ -1,6 +1,10 @@
 """
-Build a prior graph from a user-provided reference network (CSV): bidirectional edges,
-``edata['w']`` (min–max normalized weights), ``edata['dir']`` (+1 TF→target, −1 mirror, 0 self).
+Build a prior graph from a reference network CSV or from **training positives only**:
+
+* CSV-based: bidirectional edges, ``edata['w']`` (min–max normalized), ``edata['dir']``
+  (+1 TF→target, −1 mirror, 0 self).
+* :func:`build_train_positive_pearson_graph`: edges only from ``Train_set`` Label=1 pairs;
+  weights from Pearson correlation (same layout as ``gold_pearson`` via ``_triples_to_dgl``).
 """
 
 from __future__ import annotations
@@ -67,24 +71,14 @@ def _triples_to_dgl(
     return g
 
 
-def _resolve_endpoints(
+def _resolve_endpoints_by_symbol(
     row_tf,
     row_tg,
-    gene_names: list[str],
     gene_to_idx: dict[str, int],
-    force_symbols: bool,
 ) -> Tuple[int, int] | None:
+    """Map CSV endpoints to gene indices by **symbol only** (case-insensitive); row indices are not accepted."""
+
     def one(val) -> int | None:
-        if not force_symbols:
-            if isinstance(val, (int, np.integer)):
-                ii = int(val)
-                if 0 <= ii < len(gene_names):
-                    return ii
-            s = str(val).strip()
-            if s.isdigit():
-                ii = int(s)
-                if 0 <= ii < len(gene_names):
-                    return ii
         s = str(val).strip()
         if s in gene_to_idx:
             return gene_to_idx[s]
@@ -122,7 +116,6 @@ def build_gold_network_graph(
     gene_names: list[str],
     *,
     add_self_loops: bool = True,
-    force_gene_symbols: bool = False,
 ) -> dgl.DGLGraph:
     """
     Load directed TF→target edges from a CSV file and build a DGL graph with edge weights and ``dir``.
@@ -131,8 +124,8 @@ def build_gold_network_graph(
 
     - ``TF`` + ``Target``, or ``Gene1`` + ``Gene2``, or ``Source`` + ``Target``, or ``Regulator`` + ``Target``.
 
-    Values can be **0-based gene indices** (as in split CSVs) or **gene symbols** matching
-    ``gene_names``; use ``force_gene_symbols=True`` to disable integer-as-index parsing.
+    Values must be **gene symbols** matching expression matrix row labels in ``gene_names``
+    (case-insensitive); integer row indices are not used.
 
     **Optional weight column:** ``weight``, ``importance``, or ``w`` (case-insensitive). If absent,
     all edges use weight 1.0 before min–max normalization to ``edata['w']``.
@@ -160,12 +153,10 @@ def build_gold_network_graph(
     triples: List[Tuple[int, int, float]] = []
     n = len(df)
     for k in range(n):
-        pair = _resolve_endpoints(
+        pair = _resolve_endpoints_by_symbol(
             df[c_tf].iloc[k],
             df[c_tg].iloc[k],
-            gene_names,
             gene_to_idx,
-            force_gene_symbols,
         )
         if pair is None:
             continue
@@ -182,12 +173,11 @@ def build_gold_pearson_graph(
     expr: torch.Tensor,
     *,
     add_self_loops: bool = True,
-    force_gene_symbols: bool = False,
 ) -> dgl.DGLGraph:
     """
-    Same **directed** gold edges as :func:`build_gold_network_graph`, but each TF→target edge is weighted by the
-    **Pearson correlation** of expression between regulator and target across cells (``r_ij = r_ji`` numerically;
-    :func:`_triples_to_dgl` still assigns ``edata['dir']``: +1 on TF→target, −1 on the mirrored edge).
+    Same **directed** gold edges as :func:`build_gold_network_graph` (**gene symbols** in CSV), but each TF→target
+    edge is weighted by the **Pearson correlation** of expression between regulator and target across cells
+    (``r_ij = r_ji`` numerically; :func:`_triples_to_dgl` assigns ``edata['dir']``: +1 on TF→target, −1 on mirror).
 
     ``expr``: (G, C) genes × cells, same layout as training.
     """
@@ -208,12 +198,10 @@ def build_gold_pearson_graph(
     gold_edges: List[Tuple[int, int]] = []
     n = len(df)
     for k in range(n):
-        pair = _resolve_endpoints(
+        pair = _resolve_endpoints_by_symbol(
             df[c_tf].iloc[k],
             df[c_tg].iloc[k],
-            gene_names,
             gene_to_idx,
-            force_gene_symbols,
         )
         if pair is None:
             continue
@@ -233,4 +221,58 @@ def build_gold_pearson_graph(
         triples.append((i, j, float(r_full[i, j])))
 
     g_n = len(gene_names)
+    return _triples_to_dgl(triples, g_n, add_self_loops=add_self_loops)
+
+
+def build_train_positive_pearson_graph(
+    train_edge_index: torch.Tensor,
+    train_labels: torch.Tensor,
+    expr: torch.Tensor,
+    *,
+    add_self_loops: bool = True,
+) -> dgl.DGLGraph:
+    """
+    Prior graph edges = **only** ``Train_set`` rows with Label==1 (directed TF→target indices).
+
+    Each edge weight is the Pearson correlation between regulator and target across cells
+    (same numeric ``r`` field as :func:`build_gold_pearson_graph` before min–max inside
+    :func:`_triples_to_dgl`). Duplicate directed pairs keep the larger ``r``.
+
+    ``train_edge_index``: long ``(2, E)`` with gene row indices (same convention as split CSVs).
+    ``expr``: ``(G, C)`` genes × cells.
+    """
+    ei = train_edge_index.detach().long().cpu()
+    y = train_labels.detach().float().cpu().view(-1)
+    pos = y > 0.5
+    src = ei[0, pos]
+    dst = ei[1, pos]
+    if src.numel() == 0:
+        raise RuntimeError("train_pos_pearson: no positive edges in Train_set.")
+
+    z = expr.detach().float().cpu().numpy()
+    g_n = z.shape[0]
+    hi = int(ei.max().item())
+    if hi >= g_n:
+        raise ValueError(
+            f"train_pos_pearson: edge index {hi} out of range for expr with {g_n} genes."
+        )
+    r_full = np.corrcoef(z)
+    np.nan_to_num(r_full, copy=False, nan=0.0)
+
+    best_r: dict[Tuple[int, int], float] = {}
+    for a, b in zip(src.tolist(), dst.tolist()):
+        i, j = int(a), int(b)
+        if i == j:
+            continue
+        rij = float(r_full[i, j])
+        prev = best_r.get((i, j))
+        if prev is None or rij > prev:
+            best_r[(i, j)] = rij
+
+    if not best_r:
+        raise RuntimeError(
+            "train_pos_pearson: no usable directed edges (only self-loop positives?)."
+        )
+
+    triples = [(i, j, w) for (i, j), w in best_r.items()]
     return _triples_to_dgl(triples, g_n, add_self_loops=add_self_loops)

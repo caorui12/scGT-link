@@ -1,0 +1,4 @@
+outputs/
+.venv/
+_smoke_out/
+_smoke_gb/
