@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-**Graph Transformer GRN** — batch driver for ``train_grn_graph.py`` only.
+**scGT-Link** — batch driver for ``train_grn_graph.py`` only.
 
 Scans a GENELink-style **Benchmark Dataset** tree, runs one training job per leaf
 (``.../<Net>/<species>/TFs+{500|1000}/``), and writes an aggregate summary next to per-task
@@ -8,7 +8,7 @@ Scans a GENELink-style **Benchmark Dataset** tree, runs one training job per lea
 
 Hyperparameters: by default this script **only** passes ``--data_dir``, ``--split_dir``,
 ``--output_dir``. Everything else uses ``train_grn_graph.py`` argparse defaults (including
-``expr_encoder=scgpt_concat``, ``prior_graph=gold_pearson``, architecture sizes, lr, etc.).
+``expr_encoder=scgpt``, ``prior_graph=train_pos_pearson``, architecture sizes, lr, etc.; suite may override).
 Use ``--epochs`` / ``--seed`` only when you want to override those defaults.
 
 Each leaf must contain:
@@ -60,7 +60,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TRAIN = _REPO_ROOT / "train_grn_graph.py"
 _DEFAULT_OUTPUT_ROOT = _REPO_ROOT / "out_benchmark_graph_transformer"
 
-_STORE_TRUE_KEYS = frozenset({"no_cuda", "no_edge_weight_attn", "no_edge_dir_attn"})
+_STORE_TRUE_KEYS = frozenset({"no_cuda", "no_edge_weight_attn", "no_edge_dir_attn", "no_lappe"})
 
 
 def _env_int(name: str) -> int | None:
@@ -198,7 +198,7 @@ def _read_results(path: Path) -> dict[str, Any] | None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Graph Transformer GRN: batch train_grn_graph on all Benchmark Dataset leaves.",
+        description="scGT-Link: batch train_grn_graph on all Benchmark Dataset leaves.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     env_root = os.environ.get("GRAPH_TRANSFORMER_BENCHMARK_ROOT", "").strip()
@@ -258,6 +258,11 @@ def parse_args() -> argparse.Namespace:
         help="Skip tasks where scgpt_gene_emb.pt is missing under data_dir.",
     )
     p.add_argument(
+        "--skip_existing",
+        action="store_true",
+        help="Skip tasks that already have results.json under output_root/<slug>/.",
+    )
+    p.add_argument(
         "--filter_slug_regex",
         type=str,
         default="",
@@ -301,7 +306,7 @@ def main() -> None:
 
     _log(f"Split subdir:   {split_subdir}")
     _log(f"Output root:    {output_root}")
-    _log(f"Train script:   {_TRAIN.name} (Graph Transformer GRN, default hyperparameters except paths)")
+    _log(f"Train script:   {_TRAIN.name} (scGT-Link, default hyperparameters except paths)")
     _log(f"Forward epochs: {epochs if epochs is not None else '(train default)'}")
     _log(f"Forward seed:   {seed if seed is not None else '(train default)'}")
     _log(f"no_cuda:        {bool(args.no_cuda)}")
@@ -325,6 +330,26 @@ def main() -> None:
                 continue
 
         run_out = output_root / task.slug
+        if args.skip_existing:
+            res_path = run_out / "results.json"
+            if res_path.is_file():
+                res = _read_results(res_path)
+                _log(f"[skip {i + 1}/{len(tasks)}] {task.slug} (existing results.json)")
+                rows.append(
+                    {
+                        "slug": task.slug,
+                        "data_dir": str(task.data_dir),
+                        "split_dir": str(task.split_dir),
+                        "run_dir": str(run_out),
+                        "skipped": True,
+                        "reason": "existing_results",
+                        "test_auroc": res.get("test_auroc") if res else None,
+                        "test_auprc": res.get("test_auprc") if res else None,
+                        "best_val_auroc": res.get("best_val_auroc") if res else None,
+                    }
+                )
+                continue
+
         cmd = _build_cmd(_TRAIN, task.data_dir, task.split_dir, run_out, extra_cfg, epochs, seed)
 
         _log(f"[{i + 1}/{len(tasks)}] {task.slug}")
@@ -358,7 +383,8 @@ def main() -> None:
                 break
 
     meta = {
-        "suite": "graph_transformer_grn",
+        "suite": "scgt_link_grn",
+        "method": "scGT-Link",
         "train_script": str(_TRAIN),
         "started_utc": datetime.now(timezone.utc).isoformat(),
         "split_subdir": split_subdir,

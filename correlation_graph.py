@@ -12,11 +12,15 @@ import dgl
 def build_correlation_graph(
     expr: torch.Tensor,
     top_k: int = 20,
+    *,
+    min_abs_corr: float | None = None,
     add_self_loops: bool = True,
 ) -> dgl.DGLGraph:
     """
     expr: (G, C) genes × cells (float).
-    For each gene i, keep top_k neighbors j (j≠i) by |correlation(i,j)|; add undirected edges i↔j.
+
+    * ``min_abs_corr`` set: undirected edges for all pairs with ``|r_ij| >= min_abs_corr``.
+    * else: for each gene i, keep ``top_k`` neighbors j (j≠i) by |correlation(i,j)|.
     """
     z = expr.detach().float().cpu().numpy()
     g_n = z.shape[0]
@@ -29,19 +33,30 @@ def build_correlation_graph(
     r_sel = r_full.copy()
     np.fill_diagonal(r_sel, 0.0)
 
-    k_eff = min(top_k, g_n - 1)
     pairs: Set[Tuple[int, int]] = set()
-    for i in range(g_n):
-        abs_row = np.abs(r_sel[i]).copy()
-        abs_row[i] = -np.inf
-        if k_eff <= 0:
-            break
-        j_idx = np.argpartition(-abs_row, k_eff - 1)[:k_eff]
-        for j in j_idx:
-            if j == i:
-                continue
-            pairs.add((int(i), int(j)))
-            pairs.add((int(j), int(i)))
+    if min_abs_corr is not None:
+        thr = float(min_abs_corr)
+        if thr < 0.0:
+            raise ValueError(f"min_abs_corr must be >= 0, got {thr}")
+        for i in range(g_n):
+            for j in range(g_n):
+                if i == j:
+                    continue
+                if abs(float(r_sel[i, j])) >= thr:
+                    pairs.add((int(i), int(j)))
+    else:
+        k_eff = min(top_k, g_n - 1)
+        for i in range(g_n):
+            abs_row = np.abs(r_sel[i]).copy()
+            abs_row[i] = -np.inf
+            if k_eff <= 0:
+                break
+            j_idx = np.argpartition(-abs_row, k_eff - 1)[:k_eff]
+            for j in j_idx:
+                if j == i:
+                    continue
+                pairs.add((int(i), int(j)))
+                pairs.add((int(j), int(i)))
 
     if add_self_loops:
         for i in range(g_n):

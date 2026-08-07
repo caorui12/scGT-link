@@ -2,7 +2,7 @@
 Build a prior graph from a reference network CSV or from **training positives only**:
 
 * CSV-based: bidirectional edges, ``edata['w']`` (min–max normalized), ``edata['dir']``
-  (+1 TF→target, −1 mirror, 0 self).
+  (+1 TF→target, −1 mirror, 0 self), ``edata['tf2t']`` (1 on TF→target, else 0).
 * :func:`build_train_positive_pearson_graph`: edges only from ``Train_set`` Label=1 pairs;
   weights from Pearson correlation (same layout as ``gold_pearson`` via ``_triples_to_dgl``).
 """
@@ -58,16 +58,22 @@ def _triples_to_dgl(
     d = edst.cpu().numpy()
     w_list: List[float] = []
     dir_list: List[float] = []
+    tf2t_list: List[float] = []
     for a, b in zip(s, d):
         ia, ib = int(a), int(b)
         if ia == ib:
             w_list.append(1.0)
             dir_list.append(0.0)
+            tf2t_list.append(0.0)
         else:
+            dval = float(pairs_dir.get((ia, ib), 0.0))
             w_list.append(pairs_w.get((ia, ib), 0.5))
-            dir_list.append(pairs_dir.get((ia, ib), 0.0))
+            dir_list.append(dval)
+            # 1 on original TF→target edges, 0 on mirrored / other.
+            tf2t_list.append(1.0 if dval > 0.0 else 0.0)
     g.edata["w"] = torch.tensor(w_list, dtype=torch.float32)
     g.edata["dir"] = torch.tensor(dir_list, dtype=torch.float32)
+    g.edata["tf2t"] = torch.tensor(tf2t_list, dtype=torch.float32)
     return g
 
 

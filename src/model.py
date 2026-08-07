@@ -11,100 +11,159 @@ import os
 os.environ['DGLBACKEND'] = 'pytorch'
 
 
+def _grouped_softmax(logits: torch.Tensor, group_index: torch.Tensor, n_groups: int) -> torch.Tensor:
+    """Softmax over edges that share the same ``group_index`` (e.g. destination node).
+
+    logits: [E, H], group_index: [E]
+    """
+    # numerical stability via per-group max
+    neg_inf = torch.finfo(logits.dtype).min
+    group_max = torch.full(
+        (n_groups, logits.size(1)),
+        neg_inf,
+        device=logits.device,
+        dtype=logits.dtype,
+    )
+    idx = group_index.unsqueeze(1).expand_as(logits)
+    group_max.scatter_reduce_(0, idx, logits, reduce="amax", include_self=True)
+    exp = torch.exp(logits - group_max[group_index])
+    group_sum = torch.zeros_like(group_max)
+    group_sum.scatter_add_(0, idx, exp)
+    return exp / (group_sum[group_index].clamp_min(1e-9))
+
+
 # sparse attention module (without dgl.sparse)
 class SparseMHA(nn.Module):
+    """Sparse multi-head attention on prior-graph edges.
+
+    Parameters
+    ----------
+    aggregate:
+        ``src`` — legacy: each source aggregates values from its destinations
+        (message flow opposite to edge arrow).
+        ``dst`` — each destination aggregates from sources (standard directed MP:
+        on TF→target edges, targets receive TF messages).
+    use_edge_message:
+        If True, add an MLP embedding of ``[w, dir]`` into the value message.
+    """
+
     def __init__(
         self,
         hidden_dim=80,
         num_heads=8,
         use_edge_weight_bias: bool = True,
         use_directed_edge_bias: bool = False,
+        *,
+        aggregate: str = "src",
+        use_edge_message: bool = False,
+        dropout: float = 0.0,
     ):
         super().__init__()
-        self.hidden_dim=hidden_dim
-        self.num_heads=num_heads
+        if hidden_dim % num_heads != 0:
+            raise ValueError(f"hidden_dim ({hidden_dim}) must be divisible by num_heads ({num_heads})")
+        aggregate = str(aggregate).lower().strip()
+        if aggregate not in ("src", "dst"):
+            raise ValueError(f"aggregate must be 'src' or 'dst', got {aggregate!r}")
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
         self.use_edge_weight_bias = use_edge_weight_bias
         self.use_directed_edge_bias = use_directed_edge_bias
+        self.aggregate = aggregate
+        self.use_edge_message = use_edge_message
+        self.attn_drop = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
 
-        self.linear_q=nn.Linear(hidden_dim,hidden_dim)
-        self.linear_k=nn.Linear(hidden_dim,hidden_dim)
-        self.linear_v=nn.Linear(hidden_dim,hidden_dim)
-
-        # projection of output
-        self.out_proj=nn.Linear(hidden_dim,hidden_dim)
+        self.linear_q = nn.Linear(hidden_dim, hidden_dim)
+        self.linear_k = nn.Linear(hidden_dim, hidden_dim)
+        self.linear_v = nn.Linear(hidden_dim, hidden_dim)
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
 
         if use_edge_weight_bias:
             # Add Pearson r_ij (from g.edata['w']) to attention logits before softmax.
             self.edge_logit_scale = nn.Parameter(torch.tensor(1.0))
         if use_directed_edge_bias:
-            # GRNBoost2: g.edata['dir'] = +1 on TF→target, −1 on mirrored target→TF; 0 on self-loops.
+            # +1/−1 dir bias, plus binary TF→target (tf2t) bias.
             self.edge_dir_scale = nn.Parameter(torch.tensor(1.0))
+            self.edge_tf2t_scale = nn.Parameter(torch.tensor(1.0))
+        if use_edge_message:
+            # Edge conditioner: [w, dir] → hidden, added to value messages.
+            self.edge_msg_mlp = nn.Sequential(
+                nn.Linear(2, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+            )
 
-    def forward(self,g,h):
-        # g: DGL graph, h: [N,hidden_dim]
-        N=len(h)
-        nh=self.num_heads
-        dh=self.hidden_dim//nh
-        device=h.device
+    def _edge_features(self, g, device, dtype, n_edges: int):
+        if "w" in g.edata:
+            w = g.edata["w"].to(device=device, dtype=dtype).reshape(-1)
+        else:
+            w = torch.zeros(n_edges, device=device, dtype=dtype)
+        if "dir" in g.edata:
+            ddir = g.edata["dir"].to(device=device, dtype=dtype).reshape(-1)
+        else:
+            ddir = torch.zeros(n_edges, device=device, dtype=dtype)
+        if "tf2t" in g.edata:
+            tf2t = g.edata["tf2t"].to(device=device, dtype=dtype).reshape(-1)
+        elif "dir" in g.edata:
+            # Derive on the fly for older graphs that only stored dir.
+            tf2t = (ddir > 0).to(dtype=dtype)
+        else:
+            tf2t = torch.zeros(n_edges, device=device, dtype=dtype)
+        return w, ddir, tf2t
 
-        # Get edges from graph
+    def forward(self, g, h):
+        # g: DGL graph, h: [N, hidden_dim]
+        N = h.size(0)
+        nh = self.num_heads
+        dh = self.hidden_dim // nh
+        device = h.device
+
         src, dst = g.edges()
+        E = src.numel()
 
-        q=self.linear_q(h).reshape(N,dh,nh)  # [N,dh,nh]
-        k=self.linear_k(h).reshape(N,dh,nh)  # [N,dh,nh]
-        v=self.linear_v(h).reshape(N,dh,nh)  # [N,dh,nh]
+        q = self.linear_q(h).reshape(N, dh, nh)
+        k = self.linear_k(h).reshape(N, dh, nh)
+        v = self.linear_v(h).reshape(N, dh, nh)
 
-        # Compute attention scores for edges only
-        edge_q = q[src]  # [E,dh,nh]
-        edge_k = k[dst]  # [E,dh,nh]
-        edge_attention = torch.sum(edge_q * edge_k, dim=1)  # [E,nh]
-        if (
-            self.use_edge_weight_bias
-            and "w" in g.edata
-            and hasattr(self, "edge_logit_scale")
-        ):
-            w = g.edata["w"].to(device=device, dtype=edge_attention.dtype)
+        w, ddir, tf2t = self._edge_features(g, device, h.dtype, E)
+
+        if self.aggregate == "dst":
+            # Incoming MP: target (dst) queries, source (src) keys/values.
+            edge_q = q[dst]
+            edge_k = k[src]
+            neighbor_v = v[src]
+            group = dst
+        else:
+            # Legacy: source queries, destination keys/values.
+            edge_q = q[src]
+            edge_k = k[dst]
+            neighbor_v = v[dst]
+            group = src
+
+        # [E, nh] — scale only for directed variant (legacy matched unscaled logits)
+        edge_attention = (edge_q * edge_k).sum(dim=1)
+        if self.aggregate == "dst":
+            edge_attention = edge_attention / (dh ** 0.5)
+
+        if self.use_edge_weight_bias and hasattr(self, "edge_logit_scale"):
             edge_attention = edge_attention + self.edge_logit_scale * w.unsqueeze(-1)
-        if (
-            self.use_directed_edge_bias
-            and "dir" in g.edata
-            and hasattr(self, "edge_dir_scale")
-        ):
-            ddir = g.edata["dir"].to(device=device, dtype=edge_attention.dtype)
+        if self.use_directed_edge_bias and hasattr(self, "edge_dir_scale"):
             edge_attention = edge_attention + self.edge_dir_scale * ddir.unsqueeze(-1)
+        if self.use_directed_edge_bias and hasattr(self, "edge_tf2t_scale"):
+            edge_attention = edge_attention + self.edge_tf2t_scale * tf2t.unsqueeze(-1)
 
-        # Compute attention weights per source node
-        # We need to softmax over neighbors for each source node
-        # Group by source and apply softmax
+        attn_weights = _grouped_softmax(edge_attention, group, N)
+        attn_weights = self.attn_drop(attn_weights)
 
-        # Get unique source nodes
-        unique_src, inverse_indices = torch.unique(src, return_inverse=True)
+        if self.use_edge_message and hasattr(self, "edge_msg_mlp"):
+            e_feat = torch.stack([w, ddir], dim=-1)
+            e_msg = self.edge_msg_mlp(e_feat).reshape(E, dh, nh)
+            neighbor_v = neighbor_v + e_msg
 
-        # Initialize output
-        out = torch.zeros_like(h).reshape(N, dh, nh)
-
-        for i, node in enumerate(unique_src):
-            # Get all outgoing edges from this node
-            edge_mask = (src == node)
-            node_dst = dst[edge_mask]
-            node_edge_attn = edge_attention[edge_mask]  # [num_edges, nh]
-
-            # Softmax over neighbors
-            attn_weights = F.softmax(node_edge_attn, dim=0)  # [num_edges, nh]
-
-            # Aggregate values from neighbors
-            neighbor_v = v[node_dst]  # [num_edges, dh, nh]
-
-            # Compute weighted sum
-            # attn_weights: [num_edges, nh], neighbor_v: [num_edges, dh, nh]
-            # out[node, k, h] = sum_j attn_weights[j, h] * neighbor_v[j, k, h]
-            weighted_v = attn_weights.unsqueeze(1) * neighbor_v  # [num_edges, dh, nh]
-            aggregated = torch.sum(weighted_v, dim=0)  # [dh, nh]
-
-            out[node] = aggregated
-
-        out = out.reshape(N, -1)  # [N, hidden_dim]
-
+        # weighted sum into group nodes
+        weighted = attn_weights.unsqueeze(1) * neighbor_v  # [E, dh, nh]
+        out = torch.zeros(N, dh, nh, device=device, dtype=h.dtype)
+        out.index_add_(0, group, weighted)
+        out = out.reshape(N, -1)
         return self.out_proj(out)
 
 
@@ -115,36 +174,70 @@ class GTLayer(nn.Module):
         num_heads=8,
         use_edge_weight_bias: bool = True,
         use_directed_edge_bias: bool = False,
+        *,
+        aggregate: str = "src",
+        use_edge_message: bool = False,
+        norm_type: str = "bn",
+        dropout: float = 0.0,
     ):
         super().__init__()
-
         self.attention = SparseMHA(
             hidden_dim,
             num_heads,
             use_edge_weight_bias=use_edge_weight_bias,
             use_directed_edge_bias=use_directed_edge_bias,
+            aggregate=aggregate,
+            use_edge_message=use_edge_message,
+            dropout=dropout,
         )
-        self.hidden_dim=hidden_dim
-        self.num_heads=num_heads
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.norm_type = str(norm_type).lower().strip()
+        self.dropout = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
 
-        self.bn1=nn.BatchNorm1d(hidden_dim)
-        self.bn2=nn.BatchNorm1d(hidden_dim)
+        if self.norm_type == "ln":
+            self.norm1 = nn.LayerNorm(hidden_dim)
+            self.norm2 = nn.LayerNorm(hidden_dim)
+        else:
+            # Legacy attribute names (bn1/bn2) for older checkpoints.
+            self.bn1 = nn.BatchNorm1d(hidden_dim)
+            self.bn2 = nn.BatchNorm1d(hidden_dim)
 
-        self.ffn=nn.Sequential(nn.Linear(hidden_dim,2*hidden_dim),
-                              nn.ReLU(),
-                              nn.Linear(2*hidden_dim,hidden_dim))
-    def forward(self,A,h):
+        if dropout and dropout > 0:
+            self.ffn = nn.Sequential(
+                nn.Linear(hidden_dim, 2 * hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(2 * hidden_dim, hidden_dim),
+            )
+        else:
+            # Match legacy checkpoint key layout: ffn.0 / ffn.2
+            self.ffn = nn.Sequential(
+                nn.Linear(hidden_dim, 2 * hidden_dim),
+                nn.ReLU(),
+                nn.Linear(2 * hidden_dim, hidden_dim),
+            )
 
-        h1=self.attention(A,h) # [N,hidden_dim]
-        h=self.bn1(h+h1)
-
-        h2=self.ffn(h)
-        h=self.bn2(h+h2)
-
+    def forward(self, A, h):
+        h1 = self.attention(A, h)
+        if self.norm_type == "ln":
+            h = self.norm1(h + self.dropout(h1))
+            h = self.norm2(h + self.dropout(self.ffn(h)))
+        else:
+            h = self.bn1(h + self.dropout(h1))
+            h = self.bn2(h + self.dropout(self.ffn(h)))
         return h
 
 
 class GraphTransformer(nn.Module):
+    """Graph Transformer over the prior GRN graph.
+
+    ``gt_variant``
+        ``directed`` — dst-aggregation, edge-conditioned messages, LayerNorm + dropout
+        (default; vectorized SparseMHA).
+        ``legacy`` — original src-aggregation + BatchNorm (older ckpts / ablation).
+    """
+
     def __init__(
         self,
         in_dim,
@@ -153,29 +246,80 @@ class GraphTransformer(nn.Module):
         num_layers,
         use_edge_weight_attn: bool = True,
         use_directed_edge_bias: bool = False,
+        *,
+        triple_fuse: bool = False,
+        expr_in_dim: int | None = None,
+        scgpt_in_dim: int | None = None,
+        skip_pos_at_gt: bool = False,
+        gt_variant: str = "directed",
+        dropout: float = 0.0,
     ):
         super().__init__()
+        self.triple_fuse = triple_fuse
+        self.skip_pos_at_gt = skip_pos_at_gt
+        gt_variant = str(gt_variant).lower().strip()
+        if gt_variant not in ("legacy", "directed"):
+            raise ValueError(f"gt_variant must be 'legacy' or 'directed', got {gt_variant!r}")
+        self.gt_variant = gt_variant
+        directed = gt_variant == "directed"
+        aggregate = "dst" if directed else "src"
+        use_edge_message = directed
+        norm_type = "ln" if directed else "bn"
+        drop = float(dropout) if directed else 0.0
 
-        self.encoder = nn.Linear(in_dim, hidden_dim)
+        if triple_fuse:
+            if expr_in_dim is None or scgpt_in_dim is None:
+                raise ValueError("triple_fuse requires expr_in_dim and scgpt_in_dim")
+            self.expr_encoder = nn.Linear(expr_in_dim, hidden_dim)
+            self.scgpt_encoder = nn.Linear(scgpt_in_dim, hidden_dim)
+            self.pos_linear = nn.Linear(in_dim, hidden_dim)
+            self.encoder = None
+        else:
+            self.encoder = nn.Linear(in_dim, hidden_dim)
+            self.pos_linear = None if skip_pos_at_gt else nn.Linear(in_dim, hidden_dim)
+            self.expr_encoder = None
+            self.scgpt_encoder = None
 
-        self.pos_linear=nn.Linear(in_dim,hidden_dim)
-
-        # stack graph transformer layers
-        self.layers=nn.ModuleList(
+        self.layers = nn.ModuleList(
             [
                 GTLayer(
                     hidden_dim,
                     num_heads,
                     use_edge_weight_bias=use_edge_weight_attn,
                     use_directed_edge_bias=use_directed_edge_bias,
+                    aggregate=aggregate,
+                    use_edge_message=use_edge_message,
+                    norm_type=norm_type,
+                    dropout=drop,
                 )
                 for _ in range(num_layers)
             ]
         )
 
-    def forward(self, g, X, pos_enc):
-        h = self.encoder(X) + self.pos_linear(pos_enc)
+    def forward(
+        self,
+        g,
+        X,
+        pos_enc,
+        *,
+        h_expr: torch.Tensor | None = None,
+        h_scgpt: torch.Tensor | None = None,
+    ):
+        if self.triple_fuse:
+            if h_expr is None or h_scgpt is None:
+                raise ValueError("triple_fuse GraphTransformer requires h_expr and h_scgpt")
+            h = (
+                self.expr_encoder(h_expr)
+                + self.scgpt_encoder(h_scgpt)
+                + self.pos_linear(pos_enc)
+            )
+        else:
+            if self.encoder is None:
+                raise ValueError("encoder is required when triple_fuse is False")
+            if self.skip_pos_at_gt:
+                h = self.encoder(X)
+            else:
+                h = self.encoder(X) + self.pos_linear(pos_enc)
         for layer in self.layers:
-            h=layer(g,h)
-
+            h = layer(g, h)
         return h
