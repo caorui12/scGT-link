@@ -285,7 +285,7 @@ def plot_overview(out_base: Path, *, journal: str = "nature") -> None:
         (0.428, y0 + 0.28),
         0.18,
         0.34,
-        "GT layer  ($L = 6$ stacked)\n\n"
+        "GT layer  ($L = 2$ stacked)\n\n"
         "1.  Sparse multi-head attention ($H{=}4$)\n"
         "     messages only on graph edges\n"
         "     attn $\\leftarrow$ learnable $\\alpha w + \\beta d$\n\n"
@@ -421,7 +421,7 @@ def plot_overview(out_base: Path, *, journal: str = "nature") -> None:
         0.04,
         0.067,
         "Pipeline:  train-positive prior + Pearson weights  →  scGPT encoder + LapPE (v2; no expr branch)  →  "
-        "6-layer edge-aware Graph Transformer  →  MLP link head  →  weighted BCE.  "
+        "2-layer edge-aware Graph Transformer  →  MLP link head  →  weighted BCE.  "
         "Default (scGT-Link v2): scgpt + train_pos_pearson.",
         ha="left",
         va="center",

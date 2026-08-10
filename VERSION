@@ -2,3 +2,4 @@ scGT-Link v2
 expr_encoder=scgpt (expression not used as encoder input)
 prior_graph=train_pos_pearson
 gt_variant=directed
+gt_num_layers=2

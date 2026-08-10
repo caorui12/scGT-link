@@ -46,7 +46,7 @@ python train_grn_graph.py \
   --output_dir out_run
 ```
 
-Defaults (**scGT-Link v2**): **`prior_graph=train_pos_pearson`**, **`expr_encoder=scgpt`**, **`gt_variant=directed`**, and remap **`scgpt_emb_pt`** to `<data_dir>/scgpt_gene_emb.pt`. Precompute embeddings once:
+Defaults (**scGT-Link v2**): **`prior_graph=train_pos_pearson`**, **`expr_encoder=scgpt`**, **`gt_variant=directed`**, **`gt_num_layers=2`**, and remap **`scgpt_emb_pt`** to `<data_dir>/scgpt_gene_emb.pt`. Precompute embeddings once:
 
 ```bash
 python scripts/precompute_scgpt_gene_emb.py \

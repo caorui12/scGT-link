@@ -267,8 +267,8 @@ def parse_args(argv: Optional[list[str]] = None):
     p.add_argument(
         "--gt_num_layers",
         type=int,
-        default=6,
-        help="GraphTransformer message-passing layers (default 6). "
+        default=2,
+        help="GraphTransformer message-passing layers (scGT-Link v2 default 2). "
         "0 = skip GT layers; encoder(X)+LapPE fusion still runs.",
     )
     p.add_argument(

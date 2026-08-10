@@ -65,7 +65,7 @@ STORE_TRUE_FLAGS = frozenset(
 DEFAULT_GRID_REST: dict[str, list[Any]] = {
     "lr": [3e-4],
     "num_layers": [4],
-    "gt_num_layers": [6],
+    "gt_num_layers": [2],
     "gt_hidden_dim": [128],
     "gt_num_heads": [4],
 }
