@@ -1,0 +1,6 @@
+# Minimal deps for the scGT-Link v2 demo (precomputed scGPT embeddings; no scgpt package required).
+torch>=2.1
+dgl>=1.1
+numpy
+pandas
+scikit-learn
