@@ -45,7 +45,7 @@ pip install dgl -f https://data.dgl.ai/wheels/torch-2.3/repo.html
 pip install numpy pandas scikit-learn
 ```
 
-## Train (paper defaults)
+## Train
 
 ```bash
 python train.py
@@ -60,15 +60,5 @@ Outputs:
 
 GPU is used automatically when available. Force CPU with `--cpu`.
 
-## Smoke test
 
-```bash
-bash run_smoke.sh
-```
 
-## Not included (on purpose)
-
-- Other BEELINE datasets / network types
-- Ablations (w/o GT, w/o scGPT, random prior, …)
-- Dual expression encoders, GRNBoost2 / gold priors, MAGLapPE / RWPE
-- Full scGPT checkpoint download
