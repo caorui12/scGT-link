@@ -6,6 +6,10 @@ Paper defaults:
   prior_graph  = train_pos_pearson
   gt_variant   = directed, L=2, H=4, hidden=128
   d_model=768, lr=3e-4, epochs=200, seed=42
+
+Run from repo root or from src/:
+  cd src/
+  python main.py
 """
 
 from __future__ import annotations
@@ -25,14 +29,16 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import average_precision_score, roc_auc_score
 
-from scgt.data import load_edge_split, load_expression, load_scgpt_emb_pt
-from scgt.encoder import ScGPTEncoder
-from scgt.link import LinkPredictor
-from scgt.model import GraphTransformer
-from scgt.prior import build_train_positive_pearson_graph
+from encoder import ScGPTEncoder
+from input_data import load_edge_split, load_expression, load_scgpt_emb_pt
+from link import LinkPredictor
+from model import GraphTransformer
+from prior import build_train_positive_pearson_graph
 
-_DEMO_ROOT = Path(__file__).resolve().parent
-_DEFAULT_DATA = _DEMO_ROOT / "data" / "STRING_hESC_TFs500"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_DATA = _REPO_ROOT / "data" / "STRING_hESC_TFs500"
+_DEFAULT_SCGPT = _REPO_ROOT / "scGPT" / "STRING_hESC_TFs500" / "scgpt_gene_emb.pt"
+_DEFAULT_OUT = _REPO_ROOT / "out" / "STRING_hESC_TFs500"
 
 
 def set_seed(seed: int) -> None:
@@ -60,12 +66,18 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="scGT-Link v2 demo (STRING hESC TFs+500)")
     p.add_argument("--data_dir", type=Path, default=_DEFAULT_DATA)
     p.add_argument(
+        "--scgpt_emb",
+        type=Path,
+        default=_DEFAULT_SCGPT,
+        help="Precomputed scGPT gene embedding .pt",
+    )
+    p.add_argument(
         "--split_dir",
         type=Path,
         default=None,
         help="Default: <data_dir>/Train_validation_test",
     )
-    p.add_argument("--output_dir", type=Path, default=_DEMO_ROOT / "out" / "STRING_hESC_TFs500")
+    p.add_argument("--output_dir", type=Path, default=_DEFAULT_OUT)
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--d_model", type=int, default=768)
@@ -82,13 +94,13 @@ def main() -> None:
     args = parse_args()
     set_seed(args.seed)
     data_dir = args.data_dir.expanduser().resolve()
+    emb_path = args.scgpt_emb.expanduser().resolve()
     split_dir = (args.split_dir or (data_dir / "Train_validation_test")).expanduser().resolve()
     out_dir = args.output_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cpu" if args.cpu or not torch.cuda.is_available() else "cuda")
     expr_path = data_dir / "BL--ExpressionData.csv"
-    emb_path = data_dir / "scgpt_gene_emb.pt"
     for path in (expr_path, emb_path, split_dir / "Train_set.csv"):
         if not path.exists():
             raise SystemExit(f"Missing required file: {path}")

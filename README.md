@@ -11,22 +11,27 @@ This repository contains a **minimal, self-contained** codebase and **one** BEEL
 3. Directed sparse Graph Transformer (L=2, H=4, hidden=128)
 4. Concat MLP link head + weighted BCE
 
-Precomputed `scgpt_gene_emb.pt` is included. You do **not** need the full scGPT checkpoint or the `scgpt` Python package to train.
+Precomputed scGPT embeddings are included under `scGPT/`. You do **not** need the full scGPT checkpoint or the `scgpt` Python package to train.
 
 ## Layout
 
 ```
 .
-  train.py                 # entry point
+  README.md
   requirements.txt
-  run_smoke.sh             # 2-epoch CPU smoke test
-  scgt/                    # slim library (includes model.py)
-  data/STRING_hESC_TFs500/
-    BL--ExpressionData.csv
+  run_smoke.sh
+  data/STRING_hESC_TFs500/          # expression + train/val/test splits
+  scGPT/STRING_hESC_TFs500/         # precomputed scGPT gene embeddings
     scgpt_gene_emb.pt
-    Train_validation_test/{Train,Validation,Test}_set.csv
-  checkpoints/STRING_hESC_TFs500/
-    best.pt                # trained weights (200 epochs, seed 42)
+  src/                              # model + training scripts
+    main.py
+    model.py
+    encoder.py
+    link.py
+    prior.py
+    input_data.py
+  checkpoints/STRING_hESC_TFs500/   # pretrained demo weights
+    best.pt
     results.json
 ```
 
@@ -36,8 +41,6 @@ Trained demo weights are in `checkpoints/STRING_hESC_TFs500/`:
 
 - `best.pt`: best validation AUROC after 200 epochs (seed 42)
 - `results.json`: test AUROC ≈ 0.951, AUPRC ≈ 0.413 (CPU run)
-
-Model architecture code: `scgt/model.py`.
 
 ## Setup
 
@@ -57,17 +60,26 @@ pip install dgl -f https://data.dgl.ai/wheels/torch-2.3/repo.html
 pip install numpy pandas scikit-learn
 ```
 
-## Train
+## How to run
+
+Same style as GT-GRN:
 
 ```bash
-python train.py
+cd src/
+python main.py
 ```
 
 Defaults: `--epochs 200 --lr 3e-4 --d_model 768 --gt_num_layers 2 --gt_hidden_dim 128 --gt_num_heads 4 --seed 42`
 
-Outputs:
+Outputs (repo root):
 
 - `out/STRING_hESC_TFs500/best.pt`
-- `out/STRING_hESC_TFs500/results.json` (test AUROC / AUPRC)
+- `out/STRING_hESC_TFs500/results.json`
 
 GPU is used automatically when available. Force CPU with `--cpu`.
+
+## Smoke test
+
+```bash
+bash run_smoke.sh
+```
