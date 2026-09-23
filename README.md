@@ -19,7 +19,6 @@ Precomputed scGPT embeddings are included under `scGPT/`. You do **not** need th
 .
   README.md
   requirements.txt
-  run_smoke.sh
   data/STRING_hESC_TFs500/          # expression + train/val/test splits
   scGPT/STRING_hESC_TFs500/         # precomputed scGPT gene embeddings
     scgpt_gene_emb.pt
@@ -78,8 +77,3 @@ Outputs (repo root):
 
 GPU is used automatically when available. Force CPU with `--cpu`.
 
-## Smoke test
-
-```bash
-bash run_smoke.sh
-```
