@@ -1,0 +1,22 @@
+{
+  "dataset": "STRING__hESC__500",
+  "seed": 42,
+  "epochs": 200,
+  "best_epoch": 188,
+  "best_val_auroc": 0.9622599390913,
+  "test_auroc": 0.9507026043705367,
+  "test_auprc": 0.413350506644473,
+  "training_time_sec": 37.93035933282226,
+  "device": "cpu",
+  "config": {
+    "expr_encoder": "scgpt",
+    "prior_graph": "train_pos_pearson",
+    "gt_variant": "directed",
+    "d_model": 768,
+    "gt_hidden_dim": 128,
+    "gt_num_layers": 2,
+    "gt_num_heads": 4,
+    "lr": 0.0003,
+    "dropout": 0.1
+  }
+}

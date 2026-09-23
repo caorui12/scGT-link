@@ -19,12 +19,25 @@ Precomputed `scgpt_gene_emb.pt` is included. You do **not** need the full scGPT 
 .
   train.py                 # entry point
   requirements.txt
-  scgt/                    # slim library 
+  run_smoke.sh             # 2-epoch CPU smoke test
+  scgt/                    # slim library (includes model.py)
   data/STRING_hESC_TFs500/
     BL--ExpressionData.csv
     scgpt_gene_emb.pt
     Train_validation_test/{Train,Validation,Test}_set.csv
+  checkpoints/STRING_hESC_TFs500/
+    best.pt                # trained weights (200 epochs, seed 42)
+    results.json
 ```
+
+## Pretrained checkpoint
+
+Trained demo weights are in `checkpoints/STRING_hESC_TFs500/`:
+
+- `best.pt`: best validation AUROC after 200 epochs (seed 42)
+- `results.json`: test AUROC ≈ 0.951, AUPRC ≈ 0.413 (CPU run)
+
+Model architecture code: `scgt/model.py`.
 
 ## Setup
 
@@ -58,6 +71,3 @@ Outputs:
 - `out/STRING_hESC_TFs500/results.json` (test AUROC / AUPRC)
 
 GPU is used automatically when available. Force CPU with `--cpu`.
-
-
-
