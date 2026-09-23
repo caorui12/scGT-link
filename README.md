@@ -19,8 +19,7 @@ Precomputed `scgpt_gene_emb.pt` is included. You do **not** need the full scGPT 
 .
   train.py                 # entry point
   requirements.txt
-  run_smoke.sh             # 2-epoch CPU smoke test
-  scgt/                    # slim library (v2 path only)
+  scgt/                    # slim library 
   data/STRING_hESC_TFs500/
     BL--ExpressionData.csv
     scgpt_gene_emb.pt
