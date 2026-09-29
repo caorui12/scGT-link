@@ -1,8 +1,8 @@
 # scGT-Link
 
-Reproduction demo for **scGT-Link v2**: an scGPT-informed directed graph transformer for supervised gene regulatory network (GRN) link prediction.
+Reproduction demo for **scGT-Link**: an scGPT-informed directed graph transformer for supervised gene regulatory network (GRN) link prediction.
 
-This repository contains a **minimal, self-contained** codebase and **one** BEELINE demo dataset (STRING / hESC / TFs+500). Ablation branches and multi-dataset launchers are omitted on purpose.
+This repository contains a **demo** codebase and **one** BEELINE demo dataset (STRING / hESC / TFs+500).Full dataset will lanuch later.
 
 ## What this is
 
