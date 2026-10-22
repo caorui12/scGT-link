@@ -51,10 +51,12 @@ from train_grn_graph import (  # noqa: E402
     _uses_skip_pos_at_gt,
     _uses_triple_gt_fuse,
     apply_split_subdir,
+    compute_structural_pe,
     load_expression_for_grn,
     logits_all_edges,
     parse_args,
     set_seed,
+    set_structural_pe_backend,
 )
 
 from argparse import Namespace  # noqa: E402 — type hints
@@ -389,13 +391,14 @@ def main() -> None:
     else:
         raise SystemExit(f"Unsupported prior_graph={args.prior_graph!r} for this script.")
 
-    g = g.to(device)
-    with torch.no_grad():
-        pe = dgl.lap_pe(g, k=in_dim, padding=True)
-    pe = pe.to(device=device, dtype=gene_expr.dtype)
-
     ckpt = torch.load(ckpt_path, map_location=device)
     meta = ckpt.get("meta", {})
+    set_structural_pe_backend(str(meta.get("struct_pe", "lap_pe")))
+
+    g = g.to(device)
+    with torch.no_grad():
+        pe = compute_structural_pe(g, in_dim)
+    pe = pe.to(device=device, dtype=gene_expr.dtype)
     use_dir_eval = meta.get("use_directed_edge_attn", False)
     use_ew_eval = meta.get("use_edge_weight_attn", True)
     expr_enc_saved = meta.get("expr_encoder", "transformer")

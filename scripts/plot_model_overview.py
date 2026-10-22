@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Publication-quality architecture overview for scGT-Link v2."""
+"""Vector reconstruction of the scGT-Link paper-mechanism overview (PDF only).
+
+Layout reference: assets/fig_model_overview_ai_v46.png (scGREAT-style 3-band AI layout) / fig_model_overview.pdf (vector).
+Fig. 1 shows model mechanism; inputs A explains parallel G0 (topology + Pearson w) and scGPT (gene names).
+"""
 
 from __future__ import annotations
 
@@ -10,458 +14,327 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-import matplotlib.patches as mpatches  # noqa: E402
-from matplotlib.patches import FancyArrowPatch, FancyBboxPatch  # noqa: E402
+from matplotlib.patches import (  # noqa: E402
+    Circle,
+    FancyArrowPatch,
+    FancyBboxPatch,
+    Rectangle,
+    RegularPolygon,
+)
+import numpy as np  # noqa: E402
 
 _ROOT = Path(__file__).resolve().parents[1]
 
-# Nature / Cell inspired palette (colorblind-friendly)
-C = {
-    "ink": "#1a1a1a",
-    "muted": "#5c5c5c",
-    "line": "#cccccc",
-    "input": "#2166ac",
-    "input_bg": "#eef4fb",
-    "encoder": "#1b7837",
-    "encoder_bg": "#edf7f0",
-    "gt": "#404040",
-    "gt_bg": "#f3f3f3",
-    "head": "#d95f02",
-    "head_bg": "#fef3e8",
-    "train": "#762a83",
-    "train_bg": "#f6eef8",
-    "arrow": "#666666",
-    "accent": "#4575b4",
-}
+INK = "#222222"
+MUTED = "#666666"
+LINE = "#C8C8C8"
+NAVY = "#3C5488"
+TEAL = "#00A087"
+SLATE = "#4A6FA5"
+VERM = "#E64B35"
+TF = "#7E6148"
+TG = "#00A087"
+GT_BG = "#EAF1F8"
+CARD = "#FFFFFF"
+SPLIT_BG = "#F7F9FC"
 
 
-def _style_rc() -> None:
+def _style() -> None:
     plt.rcParams.update(
         {
             "font.family": "sans-serif",
-            "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-            "font.size": 9,
-            "axes.linewidth": 0,
+            "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
-            "mathtext.default": "regular",
+            "text.color": INK,
         }
     )
 
 
-def _box(
-    ax,
-    xy,
-    w,
-    h,
-    text,
-    *,
-    fc="#ffffff",
-    ec=C["ink"],
-    lw=1.0,
-    fontsize=8.5,
-    fontweight="normal",
-    ha="center",
-    va="center",
-    radius=0.02,
-    zorder=2,
-    text_color=None,
-    pad_x=0.012,
-    pad_y=0.012,
-):
-    x, y = xy
-    patch = FancyBboxPatch(
-        (x, y),
+def _box(ax, xy, w, h, *, fc=CARD, ec=LINE, lw=0.9, r=0.012, z=1):
+    p = FancyBboxPatch(
+        xy,
         w,
         h,
-        boxstyle=f"round,pad=0.012,rounding_size={radius}",
+        boxstyle=f"round,pad=0.004,rounding_size={r}",
         facecolor=fc,
         edgecolor=ec,
         linewidth=lw,
-        zorder=zorder,
+        zorder=z,
     )
-    ax.add_patch(patch)
-    if ha == "left":
-        tx = x + pad_x
-    elif ha == "right":
-        tx = x + w - pad_x
-    else:
-        tx = x + w / 2
-    if va == "top":
-        ty = y + h - pad_y
-    elif va == "bottom":
-        ty = y + pad_y
-    else:
-        ty = y + h / 2
-    ax.text(
-        tx,
-        ty,
-        text,
-        ha=ha,
-        va=va,
-        fontsize=fontsize,
-        fontweight=fontweight,
-        color=text_color or C["ink"],
-        zorder=zorder + 1,
-        linespacing=1.35,
+    ax.add_patch(p)
+    return p
+
+
+def _txt(ax, x, y, s, *, size=7.0, weight="normal", color=INK, ha="center", va="center", z=5, linespacing=1.25):
+    ax.text(x, y, s, fontsize=size, fontweight=weight, color=color, ha=ha, va=va, zorder=z, linespacing=linespacing)
+
+
+def _arrow(ax, p0, p1, *, color=MUTED, lw=1.15, ms=10, z=4, style="-|>", ls="-"):
+    ax.add_patch(
+        FancyArrowPatch(
+            p0,
+            p1,
+            arrowstyle=style,
+            mutation_scale=ms,
+            linewidth=lw,
+            color=color,
+            linestyle=ls,
+            shrinkA=1,
+            shrinkB=1,
+            zorder=z,
+        )
     )
-    return patch
 
 
-def _arrow(ax, p0, p1, *, color=C["arrow"], lw=1.2, style="-|>", mutation=12, zorder=1):
-    arr = FancyArrowPatch(
-        p0,
-        p1,
-        arrowstyle=style,
-        mutation_scale=mutation,
-        linewidth=lw,
-        color=color,
-        shrinkA=2,
-        shrinkB=2,
-        zorder=zorder,
+def _heatmap(ax, x, y, w, h):
+    rng = np.array(
+        [
+            [0.2, 0.55, 0.9, 0.4],
+            [0.7, 0.25, 0.35, 0.8],
+            [0.3, 0.85, 0.5, 0.15],
+            [0.95, 0.45, 0.2, 0.65],
+        ]
     )
-    ax.add_patch(arr)
-    return arr
+    nr, nc = rng.shape
+    cw, ch = w / nc, h / nr
+    lo = np.array([0.25, 0.45, 0.75])
+    mid = np.array([0.97, 0.97, 0.96])
+    hi = np.array([0.90, 0.40, 0.20])
+    for i in range(nr):
+        for j in range(nc):
+            t = float(rng[i, j])
+            c = (1 - 2 * t) * lo + 2 * t * mid if t < 0.5 else (2 - 2 * t) * mid + (2 * t - 1) * hi
+            ax.add_patch(
+                Rectangle(
+                    (x + j * cw, y + (nr - 1 - i) * ch),
+                    cw * 0.9,
+                    ch * 0.85,
+                    facecolor=c,
+                    edgecolor="white",
+                    lw=0.25,
+                    zorder=2,
+                )
+            )
 
 
-def _panel_label(ax, letter: str, x: float, y: float) -> None:
-    circ = plt.Circle((x, y), 0.018, facecolor=C["ink"], edgecolor="none", zorder=5)
-    ax.add_patch(circ)
-    ax.text(x, y, letter, ha="center", va="center", fontsize=10, fontweight="bold", color="white", zorder=6)
+def _mini_graph(ax, x, y, w, h):
+    tfs = [(x + 0.22 * w, y + 0.72 * h), (x + 0.22 * w, y + 0.28 * h)]
+    tgs = [(x + 0.78 * w, y + 0.80 * h), (x + 0.82 * w, y + 0.50 * h), (x + 0.78 * w, y + 0.18 * h)]
+    for i, j in ((0, 0), (0, 1), (1, 2)):
+        _arrow(ax, tfs[i], tgs[j], color=NAVY, lw=0.95, ms=7)
+    for cx, cy in tfs:
+        ax.add_patch(
+            RegularPolygon((cx, cy), 5, radius=0.018, orientation=np.pi / 2, facecolor=TF, edgecolor=INK, lw=0.4, zorder=5)
+        )
+    for cx, cy in tgs:
+        ax.add_patch(Circle((cx, cy), 0.014, facecolor=TG, edgecolor=INK, lw=0.4, zorder=5))
 
 
-def _section_frame(ax, xy, w, h, title: str, accent: str, bg: str, letter: str) -> None:
-    x, y = xy
-    frame = FancyBboxPatch(
-        (x, y),
-        w,
-        h,
-        boxstyle="round,pad=0.008,rounding_size=0.025",
-        facecolor=bg,
-        edgecolor=accent,
-        linewidth=1.6,
-        zorder=0,
+def _hex_grid(ax, x, y, w, h):
+    shades = ["#3C5488", "#4C6494", "#6B84AE", "#8491B4", "#9AA6C2", "#B8C1D6"]
+    nr, nc = 2, 6
+    cw, ch = w / nc, h / nr
+    for i in range(nr):
+        for j in range(nc):
+            ax.add_patch(
+                RegularPolygon(
+                    (x + (j + 0.5) * cw, y + (nr - i - 0.5) * ch),
+                    6,
+                    radius=min(cw, ch) * 0.36,
+                    orientation=0,
+                    facecolor=shades[(i + j) % len(shades)],
+                    edgecolor="white",
+                    lw=0.3,
+                    zorder=2,
+                )
+            )
+
+
+def _capsules(ax, x, y, n=6, color=TEAL, gap=0.028):
+    for i in range(n):
+        ax.add_patch(
+            FancyBboxPatch(
+                (x + i * gap, y),
+                0.022,
+                0.028,
+                boxstyle="round,pad=0.001,rounding_size=0.008",
+                facecolor=color,
+                edgecolor=INK,
+                linewidth=0.35,
+                zorder=4,
+            )
+        )
+
+
+def _split_panel(ax) -> tuple[float, float, float, float]:
+    """Top panel: BEELINE supervised edge splits. Returns Train box anchor (x, y)."""
+    y0, h = 0.845, 0.115
+    _box(ax, (0.04, y0), 0.92, h, ec=NAVY, lw=1.05, fc=SPLIT_BG)
+    _txt(
+        ax,
+        0.50,
+        y0 + h - 0.018,
+        "Supervised edge splits (BEELINE / GENELink protocol)",
+        size=8.2,
+        weight="bold",
     )
-    ax.add_patch(frame)
-    ax.text(x + 0.012, y + h - 0.018, title, fontsize=10.5, fontweight="bold", color=accent, va="top", zorder=3)
-    _panel_label(ax, letter, x + 0.018, y + h - 0.018)
+
+    _box(ax, (0.06, y0 + 0.028), 0.15, 0.058, ec=MUTED, lw=0.75)
+    _txt(ax, 0.135, y0 + 0.068, r"Gold TF$\rightarrow$target", size=6.4, weight="bold")
+    _txt(ax, 0.135, y0 + 0.044, "pairs (Label.csv)", size=5.4, color=MUTED)
+    _arrow(ax, (0.21, y0 + 0.057), (0.245, y0 + 0.057), color=MUTED, ms=7)
+
+    splits = (
+        ("Train", NAVY, "pos + matched negatives\nTrain⁺ only builds $G_0$"),
+        ("Validation", SLATE, "held-out pos/neg pairs\ncheckpoint selection"),
+        ("Test", "#8491B4", "held-out pos/neg pairs\nAUROC / AUPRC"),
+    )
+    train_x = 0.375
+    for i, (name, col, sub) in enumerate(splits):
+        x = 0.27 + i * 0.22
+        _box(ax, (x, y0 + 0.022), 0.19, 0.072, ec=col, lw=0.95)
+        _txt(ax, x + 0.095, y0 + 0.072, name, size=7.2, weight="bold", color=col)
+        _txt(ax, x + 0.095, y0 + 0.042, sub, size=5.2, color=MUTED, linespacing=1.12)
+        if i == 0:
+            train_x = x + 0.095
+
+    _txt(
+        ax,
+        0.50,
+        y0 + 0.006,
+        "Specific: per-TF hard negatives (~70/10/20).  "
+        "STRING / Non-Specific / Lofgof: density-matched negatives.  "
+        "Val/Test positives never enter $G_0$.",
+        size=5.5,
+        color=MUTED,
+    )
+    return train_x, y0 + 0.022, 0.50, y0 + 0.34
 
 
-def plot_overview(out_base: Path, *, journal: str = "nature") -> None:
-    _style_rc()
-    # scipilot-figure-skill journal_specs: Nature full-width ~190 mm (7.48 in); min label 6 pt
-    fig_w, fig_h = (7.2, 4.8) if journal == "nature" else (7.48, 5.0)
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+def plot(out_pdf: Path) -> None:
+    _style()
+    fig, ax = plt.subplots(figsize=(11.0, 6.6))
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
 
-    fig.suptitle(
-        "scGT-Link v2: scGPT-informed graph transformer for GRN inference",
-        fontsize=12.5,
-        fontweight="bold",
-        color=C["ink"],
-        y=0.985,
-    )
-    ax.text(
-        0.5,
-        0.952,
-        "Train-positive prior graph + expression + scGPT embeddings (no gold-network leakage)",
-        ha="center",
-        va="top",
-        fontsize=9,
-        color=C["muted"],
-    )
+    train_x, train_y, g0_x, _ = _split_panel(ax)
 
-    y0, ph = 0.14, 0.76  # panel bottom, panel height
+    # ── Bottom inputs ──────────────────────────────────────────────────────
+    _box(ax, (0.04, 0.06), 0.28, 0.28, ec=NAVY, lw=1.1)
+    _txt(ax, 0.18, 0.315, r"$X$  (genes $\times$ cells)", size=8.0, weight="bold")
+    _heatmap(ax, 0.07, 0.11, 0.22, 0.16)
+    _txt(ax, 0.18, 0.085, "log-normalized scRNA-seq", size=6.0, color=MUTED)
 
-    # ── A. Inputs ──────────────────────────────────────────────────────────
-    _section_frame(ax, (0.02, y0), 0.168, ph, "Inputs", C["input"], C["input_bg"], "A")
-    _box(
-        ax,
-        (0.032, y0 + 0.58),
-        0.146,
-        0.11,
-        "Expression matrix\n$X \\in \\mathbb{R}^{G \\times C}$\nBL--ExpressionData.csv",
-        fc="white",
-        ec=C["input"],
-        fontsize=7.6,
-    )
-    _box(
-        ax,
-        (0.032, y0 + 0.42),
-        0.146,
-        0.12,
-        "Train positive edges\n$E_+ \\subset$ Train\\_set (Label=1)\nTF $\\rightarrow$ target only",
-        fc="white",
-        ec=C["input"],
-        fontsize=7.6,
-    )
-    _box(
-        ax,
-        (0.032, y0 + 0.26),
-        0.146,
-        0.12,
-        "Prior graph $\\mathcal{G}_0$\nPearson $r_{ij}$ on $X$\nedge weight $w$, direction $d$\n"
-        r"train\_pos\_pearson",
-        fc="white",
-        ec=C["input"],
-        fontsize=7.3,
-    )
-    _box(
-        ax,
-        (0.032, y0 + 0.08),
-        0.146,
-        0.12,
-        "scGPT embeddings\n$E \\in \\mathbb{R}^{G \\times 768}$\nscgpt\\_gene\\_emb.pt",
-        fc="white",
-        ec=C["input"],
-        fontsize=7.6,
-    )
+    _box(ax, (0.36, 0.06), 0.28, 0.28, ec=NAVY, lw=1.1)
+    _txt(ax, 0.50, 0.315, r"$G_0$  train-positive prior", size=8.0, weight="bold")
+    _mini_graph(ax, 0.39, 0.10, 0.22, 0.18)
+    _txt(ax, 0.50, 0.085, r"Train$^+$ edges only;  $w{=}r_{ij}$,  $d{=}\pm 1$", size=6.0, color=MUTED)
 
-    # ── B. Gene encoder ────────────────────────────────────────────────────
-    _section_frame(ax, (0.205, y0), 0.195, ph, "Dual gene encoder", C["encoder"], C["encoder_bg"], "B")
-    _box(
-        ax,
-        (0.218, y0 + 0.56),
-        0.082,
-        0.15,
-        "Expression branch\nLinear($C{\\rightarrow}768$)\n+ Laplacian PE\nTransformerEnc\n$L{=}4$, $H{=}8$",
-        fc="white",
-        ec=C["encoder"],
-        fontsize=7.0,
-    )
-    _box(
-        ax,
-        (0.312, y0 + 0.56),
-        0.075,
-        0.15,
-        "scGPT branch\nLinear($768{\\rightarrow}768$)\nfrozen $E_g$",
-        fc="white",
-        ec=C["encoder"],
-        fontsize=7.0,
-    )
-    _box(
-        ax,
-        (0.248, y0 + 0.38),
-        0.108,
-        0.09,
-        "Fusion\nConcat $\\rightarrow$ Linear\n$h_g \\in \\mathbb{R}^{768}$",
-        fc="white",
-        ec=C["encoder"],
-        fontsize=7.6,
-        fontweight="bold",
-    )
-    _box(
-        ax,
-        (0.218, y0 + 0.08),
-        0.17,
-        0.24,
-        "Graph positional encoding\nLapPE on $\\mathcal{G}_0$ ($k{=}768$)\n\n"
-        "Graph Transformer input\nLinear($768{\\rightarrow}128$)\n$z_g^{(0)} \\in \\mathbb{R}^{128}$",
-        fc="white",
-        ec=C["encoder"],
-        fontsize=7.3,
-    )
-    _arrow(ax, (0.259, y0 + 0.56), (0.285, y0 + 0.47), color=C["encoder"])
-    _arrow(ax, (0.349, y0 + 0.56), (0.325, y0 + 0.47), color=C["encoder"])
-    _arrow(ax, (0.302, y0 + 0.38), (0.302, y0 + 0.32), color=C["encoder"])
+    _box(ax, (0.68, 0.06), 0.28, 0.28, ec=NAVY, lw=1.1)
+    _txt(ax, 0.82, 0.315, r"scGPT  $E$", size=8.0, weight="bold")
+    _hex_grid(ax, 0.71, 0.12, 0.22, 0.14)
+    _txt(ax, 0.82, 0.085, "pretrained gene tokens (lookup)", size=6.0, color=MUTED)
 
-    # ── C. Graph Transformer ───────────────────────────────────────────────
-    _section_frame(ax, (0.415, y0), 0.205, ph, "scGT-Link core", C["gt"], C["gt_bg"], "C")
-    _box(
-        ax,
-        (0.428, y0 + 0.66),
-        0.18,
-        0.08,
-        "Node features $z^{(0)} \\in \\mathbb{R}^{128}$, edges $(w,d)$",
-        fc="white",
-        ec=C["gt"],
-        fontsize=7.6,
-    )
-    # Single detailed layer + repeat indicator (cleaner for print)
-    _box(
-        ax,
-        (0.428, y0 + 0.28),
-        0.18,
-        0.34,
-        "GT layer  ($L = 2$ stacked)\n\n"
-        "1.  Sparse multi-head attention ($H{=}4$)\n"
-        "     messages only on graph edges\n"
-        "     attn $\\leftarrow$ learnable $\\alpha w + \\beta d$\n\n"
-        "2.  Residual + BatchNorm\n\n"
-        "3.  FFN: 128 $\\rightarrow$ 256 $\\rightarrow$ 128\n\n"
-        "4.  Residual + BatchNorm",
-        fc="white",
-        ec=C["gt"],
-        fontsize=7.0,
-        ha="left",
-        va="top",
-        pad_x=0.014,
-        pad_y=0.014,
-    )
-    _box(
-        ax,
-        (0.428, y0 + 0.08),
-        0.18,
-        0.08,
-        "Output $z \\in \\mathbb{R}^{128}$ per gene",
-        fc="white",
-        ec=C["gt"],
-        fontsize=7.8,
-        fontweight="bold",
-    )
-    _arrow(ax, (0.518, y0 + 0.66), (0.518, y0 + 0.62), color=C["gt"], lw=0.9, mutation=8)
-    _arrow(ax, (0.518, y0 + 0.28), (0.518, y0 + 0.16), color=C["gt"], lw=0.9, mutation=8)
+    # split Train⁺ → G0; scGPT / G0 into encoder; G0 topology into GT
+    _arrow(ax, (train_x, train_y), (g0_x, 0.34), color=NAVY, lw=1.05, ls="--", ms=8)
+    _txt(ax, g0_x + 0.06, 0.58, "Train$^+$", size=5.8, color=NAVY, ha="left")
+    _arrow(ax, (0.50, 0.34), (0.50, 0.42), color=NAVY, lw=1.2)
+    _arrow(ax, (0.50, 0.42), (0.28, 0.48), color=NAVY, lw=1.0)
+    _arrow(ax, (0.82, 0.34), (0.82, 0.42), color=TEAL, lw=1.2)
+    _arrow(ax, (0.82, 0.42), (0.28, 0.55), color=TEAL, lw=1.0)
 
-    # ── D. Link prediction ─────────────────────────────────────────────────
-    _section_frame(ax, (0.635, y0), 0.145, ph, "Link predictor", C["head"], C["head_bg"], "D")
-    _box(
-        ax,
-        (0.648, y0 + 0.54),
-        0.118,
-        0.1,
-        "Candidate edge\n(TF $i$, target $j$)",
-        fc="white",
-        ec=C["head"],
-        fontsize=7.8,
-    )
-    _box(
-        ax,
-        (0.648, y0 + 0.46),
-        0.118,
-        0.1,
-        "Concat $[z_i; z_j]$\n$\\in \\mathbb{R}^{256}$",
-        fc="white",
-        ec=C["head"],
-        fontsize=7.8,
-    )
-    _box(
-        ax,
-        (0.648, y0 + 0.28),
-        0.118,
-        0.12,
-        "MLP decoder\n256 $\\rightarrow$ 128 $\\rightarrow$ 1\nReLU + Dropout",
-        fc="white",
-        ec=C["head"],
-        fontsize=7.6,
-    )
-    _box(
-        ax,
-        (0.648, y0 + 0.08),
-        0.118,
-        0.1,
-        "Logit $\\hat{y}_{ij}$\nedge probability",
-        fc="white",
-        ec=C["head"],
-        fontsize=7.8,
-        fontweight="bold",
-    )
-    _arrow(ax, (0.707, y0 + 0.54), (0.707, y0 + 0.48), color=C["head"])
-    _arrow(ax, (0.707, y0 + 0.46), (0.707, y0 + 0.40), color=C["head"])
-    _arrow(ax, (0.707, y0 + 0.28), (0.707, y0 + 0.18), color=C["head"])
+    # ── Left: node encoder (v2: proj(scGPT)+LapPE, then GT-entry projections) ─
+    _box(ax, (0.04, 0.42), 0.30, 0.40, ec=TEAL, lw=1.2, fc="#F3FAF7")
+    _txt(ax, 0.19, 0.78, "Node encoder (scGPT + LapPE)", size=8.0, weight="bold", color=TEAL)
+    steps = [
+        (0.705, r"Linear projection on $E$"),
+        (0.625, r"$+$ LapPE$(G_0)$"),
+    ]
+    for y, lab in steps:
+        _box(ax, (0.07, y - 0.028), 0.24, 0.058, ec=TEAL, lw=0.7)
+        _txt(ax, 0.19, y, lab, size=6.2)
+    _box(ax, (0.07, 0.478), 0.24, 0.058, ec=TEAL, lw=0.7)
+    _txt(ax, 0.19, 0.507, r"Node features $h$", size=6.0)
+    _box(ax, (0.34, 0.455), 0.22, 0.055, ec=SLATE, lw=0.8, fc="#EEF3FA")
+    _txt(ax, 0.45, 0.482, r"GT entry: Linear$(h)$ $+$ Linear(LapPE)", size=5.8, color=SLATE)
+    _capsules(ax, 0.10, 0.445, n=6, color=TEAL)
+    _txt(ax, 0.19, 0.435, r"Initial node features $h$", size=7.0, weight="bold")
+    for y0, y1 in ((0.705, 0.653), (0.625, 0.536)):
+        _arrow(ax, (0.19, y0 - 0.028), (0.19, y1 + 0.028), color=TEAL, lw=0.9, ms=8)
+    _arrow(ax, (0.19, 0.478), (0.34, 0.482), color=TEAL, lw=1.0, ms=8)
+    _arrow(ax, (0.50, 0.42), (0.45, 0.455), color=NAVY, lw=0.9, ls="--", ms=7)
+    _txt(ax, 0.52, 0.44, "LapPE", size=5.5, color=NAVY, ha="left")
 
-    # ── E. Training ────────────────────────────────────────────────────────
-    _section_frame(ax, (0.795, y0), 0.185, ph, "Training", C["train"], C["train_bg"], "E")
-    _box(
-        ax,
-        (0.808, y0 + 0.58),
-        0.158,
-        0.14,
-        "Supervised pairs\nTrain\\_set.csv\npositive / negative\nTF–target edges",
-        fc="white",
-        ec=C["train"],
-        fontsize=7.6,
-    )
-    _box(
-        ax,
-        (0.808, y0 + 0.36),
-        0.158,
-        0.14,
-        "Loss\nBCEWithLogitsLoss\n+ pos\\_weight",
-        fc="white",
-        ec=C["train"],
-        fontsize=7.8,
-    )
-    _box(
-        ax,
-        (0.808, y0 + 0.08),
-        0.158,
-        0.2,
-        "Evaluation\nAUROC / AUPRC\nvalidation & test",
-        fc="white",
-        ec=C["train"],
-        fontsize=8,
-        fontweight="bold",
-    )
+    # ── Center: Directed GT (novelty) ──────────────────────────────────────
+    _box(ax, (0.38, 0.42), 0.36, 0.40, ec=SLATE, lw=1.5, fc=GT_BG)
+    _txt(ax, 0.56, 0.78, "Directed Graph Transformer", size=8.5, weight="bold", color=SLATE)
+    _txt(ax, 0.56, 0.745, r"dst-agg, edge msg $[w,d]$", size=6.5, color=MUTED)
 
-    # Inter-panel flow: one arrow per adjacent module (no input-specific cross-links)
-    mid_y = y0 + ph / 2
-    panel_edges = (
-        (0.188, 0.205),  # A → B
-        (0.40, 0.415),   # B → C
-        (0.62, 0.635),   # C → D
-    )
-    for x0, x1 in panel_edges:
-        _arrow(ax, (x0, mid_y), (x1, mid_y), lw=1.5)
+    _box(ax, (0.41, 0.52), 0.30, 0.20, ec=SLATE, lw=0.9)
+    _txt(ax, 0.56, 0.695, "Each layer", size=7.0, weight="bold")
+    _mini_graph(ax, 0.43, 0.55, 0.12, 0.12)
+    _txt(ax, 0.49, 0.535, "Sparse MHA on $G_0$", size=5.8, color=MUTED)
+    items = ["dst-agg", r"$[w,d]$ msg", "LN + drop", "FFN residual block"]
+    for i, lab in enumerate(items):
+        yy = 0.68 - i * 0.035
+        ax.add_patch(Circle((0.58, yy), 0.005, facecolor=SLATE, edgecolor="none", zorder=5))
+        _txt(ax, 0.595, yy, lab, size=6.0, ha="left")
 
-    # Bottom summary
-    summary = FancyBboxPatch(
-        (0.02, 0.03),
-        0.96,
-        0.075,
-        boxstyle="round,pad=0.006,rounding_size=0.015",
-        facecolor="#f8f8f8",
-        edgecolor=C["line"],
-        linewidth=0.8,
-        zorder=0,
-    )
-    ax.add_patch(summary)
-    ax.text(
-        0.04,
-        0.067,
-        "Pipeline:  train-positive prior + Pearson weights  →  scGPT encoder + LapPE (v2; no expr branch)  →  "
-        "2-layer edge-aware Graph Transformer  →  MLP link head  →  weighted BCE.  "
-        "Default (scGT-Link v2): scgpt + train_pos_pearson.",
-        ha="left",
-        va="center",
-        fontsize=7.6,
-        color=C["muted"],
-        zorder=2,
-    )
+    _capsules(ax, 0.46, 0.455, n=6, color=SLATE)
+    _txt(ax, 0.56, 0.445, r"Output node embeddings $z$", size=7.0, weight="bold")
+    _arrow(ax, (0.45, 0.482), (0.41, 0.52), color=SLATE, lw=1.0, ms=8)
+    _arrow(ax, (0.56, 0.52), (0.56, 0.485), color=SLATE, lw=0.9, ms=8)
 
-    out_base.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_base.with_suffix(".pdf"), bbox_inches="tight", pad_inches=0.04)
-    fig.savefig(out_base.with_suffix(".png"), dpi=300, bbox_inches="tight", pad_inches=0.04)
-    fig.savefig(out_base.with_suffix(".svg"), bbox_inches="tight", pad_inches=0.04)
+    _arrow(ax, (0.50, 0.34), (0.56, 0.42), color=NAVY, lw=1.1, ls="--")
+    _txt(ax, 0.60, 0.38, r"graph $G_0$", size=6.0, color=NAVY, ha="left")
+
+    # ── Top-right: link predictor ──────────────────────────────────────────
+    _box(ax, (0.78, 0.42), 0.18, 0.40, ec=VERM, lw=1.2, fc="#FDF4F0")
+    _txt(ax, 0.87, 0.78, "Link head", size=8.0, weight="bold", color=VERM)
+    ax.add_patch(
+        RegularPolygon((0.835, 0.72), 5, radius=0.016, orientation=np.pi / 2, facecolor=TF, edgecolor=INK, lw=0.4, zorder=5)
+    )
+    ax.add_patch(Circle((0.905, 0.72), 0.013, facecolor=TG, edgecolor=INK, lw=0.4, zorder=5))
+    _txt(ax, 0.835, 0.695, r"TF $i$", size=5.8, color=TF)
+    _txt(ax, 0.905, 0.695, r"gene $j$", size=5.8, color=TEAL)
+
+    _box(ax, (0.80, 0.60), 0.14, 0.06, ec=VERM, lw=0.7)
+    _txt(ax, 0.87, 0.63, r"Concat $[z_i; z_j]$", size=6.0)
+
+    _box(ax, (0.80, 0.50), 0.14, 0.07, ec=VERM, lw=0.7)
+    _txt(ax, 0.87, 0.535, r"MLP (ReLU)", size=7.0, weight="bold")
+
+    _box(ax, (0.80, 0.44), 0.14, 0.045, ec=VERM, lw=0.9, fc="#F8D3CB")
+    _txt(ax, 0.87, 0.462, r"logit  $\hat{y}_{ij}$", size=7.0, weight="bold")
+
+    _arrow(ax, (0.74, 0.46), (0.80, 0.46), color=SLATE, lw=1.3)
+    for y0, y1 in ((0.70, 0.66), (0.60, 0.57), (0.50, 0.485)):
+        _arrow(ax, (0.87, y0), (0.87, y1), color=VERM, lw=0.85, ms=7)
+
+    # Train split supervises link head only (no generic eval box)
+    _arrow(ax, (train_x + 0.08, train_y), (0.87, 0.42), color=VERM, lw=0.95, ls="--", ms=7)
+    _txt(ax, 0.72, 0.395, "Train pairs", size=5.8, color=VERM, ha="center")
+
+    out_pdf.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_pdf, format="pdf", bbox_inches="tight", pad_inches=0.05)
     plt.close(fig)
+    print(f"Wrote {out_pdf}")
 
 
-def parse_args() -> argparse.Namespace:
+def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--output",
         type=str,
-        default=str(_ROOT / "figures/fig_model_overview"),
-        help="Output path stem (writes .pdf, .png, .svg).",
+        default=str(_ROOT / "manuscript" / "figures" / "Fig_1_model_structure.pdf"),
     )
-    p.add_argument(
-        "--journal",
-        type=str,
-        default="nature",
-        choices=("nature", "wide"),
-        help="Figure width preset (scipilot-style final size, no post-scale).",
-    )
-    return p.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
+    args = p.parse_args()
     out = Path(args.output).expanduser().resolve()
-    plot_overview(out, journal=args.journal)
-    print(f"Wrote {out.with_suffix('.pdf')}")
-    print(f"Wrote {out.with_suffix('.png')}")
-    print(f"Wrote {out.with_suffix('.svg')}")
+    if out.suffix.lower() != ".pdf":
+        out = out.with_suffix(".pdf")
+    plot(out)
 
 
 if __name__ == "__main__":

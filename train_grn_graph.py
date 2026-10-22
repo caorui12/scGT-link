@@ -93,6 +93,7 @@ from correlation_graph import build_correlation_graph  # noqa: E402
 from gold_network_graph import (  # noqa: E402
     build_gold_network_graph,
     build_gold_pearson_graph,
+    build_train_pos_union_corr_graph,
     build_train_positive_pearson_graph,
 )
 from grnboost2_graph import build_grnboost2_graph, resolve_tf_gene_names  # noqa: E402
@@ -108,6 +109,60 @@ from scgpt_loader import (  # noqa: E402
     load_scgpt_emb_from_pt,
     load_scgpt_gene_embedding_matrix,
 )
+
+_STRUCTURAL_PE_COMPUTE = None
+_STRUCTURAL_PE_NAME = "lap_pe"
+
+
+def get_structural_pe_name() -> str:
+    return _STRUCTURAL_PE_NAME
+
+
+def set_structural_pe_compute(fn, name: str = "custom") -> None:
+    """Register a custom ``(g, k) -> Tensor`` PE function (used by ``mag_lappe/`` and ``rwpe/``)."""
+    global _STRUCTURAL_PE_COMPUTE, _STRUCTURAL_PE_NAME
+    _STRUCTURAL_PE_COMPUTE = fn
+    _STRUCTURAL_PE_NAME = str(name)
+
+
+def set_structural_pe_backend(name: str) -> None:
+    """Resolve a named backend: ``lap_pe`` (default), ``mag_lappe``, or ``rwpe``."""
+    backend = (name or "lap_pe").strip().lower()
+    if backend in ("", "lap_pe", "lappe"):
+        set_structural_pe_compute(None, "lap_pe")
+        return
+    repo_root = Path(__file__).resolve().parent
+    if backend == "mag_lappe":
+        import importlib.util
+
+        mod_path = repo_root / "mag_lappe" / "structural_pe.py"
+        spec = importlib.util.spec_from_file_location("mag_lappe_structural_pe", mod_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load {mod_path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        set_structural_pe_compute(mod.compute_structural_pe, "mag_lappe")
+        return
+    if backend == "rwpe":
+        import importlib.util
+
+        mod_path = repo_root / "rwpe" / "structural_pe.py"
+        spec = importlib.util.spec_from_file_location("rwpe_structural_pe", mod_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load {mod_path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        set_structural_pe_compute(mod.compute_structural_pe, "rwpe")
+        return
+    raise ValueError(f"Unknown structural PE backend: {name!r}")
+
+
+def compute_structural_pe(g, k: int) -> torch.Tensor:
+    """Node structural PE of shape ``(n_nodes, k)``. Default: DGL ``lap_pe``."""
+    if _STRUCTURAL_PE_COMPUTE is not None:
+        return _STRUCTURAL_PE_COMPUTE(g, int(k))
+    return dgl.lap_pe(g, k=int(k), padding=True)
+
 
 # Registered datasets under ``data/``: expression folder + Train_validation_test split folder.
 DATASET_REGISTRY: dict[str, tuple[str, str]] = {
@@ -192,6 +247,22 @@ def parse_args(argv: Optional[list[str]] = None):
         type=str,
         default="",
         help="Explicit checkpoint path to resume (overrides --resume search).",
+    )
+    p.add_argument(
+        "--init_weights_from",
+        type=str,
+        default="",
+        help="Load compatible weights from another run (transfer / fine-tune). "
+        "Skips gene-count-specific buffers (e.g. scgpt_gene_emb) and any tensor "
+        "whose shape does not match. Does not restore optimizer or epoch; starts at epoch 1. "
+        "Incompatible with --resume / --resume_from.",
+    )
+    p.add_argument(
+        "--freeze_modules",
+        type=str,
+        default="",
+        help="Comma-separated modules to freeze: seq, gt, predictor. "
+        "Useful with --init_weights_from (e.g. freeze seq,gt to train link head only).",
     )
     p.add_argument("--edge_batch_size", type=int, default=4096)
     p.add_argument(
@@ -298,8 +369,17 @@ def parse_args(argv: Optional[list[str]] = None):
         type=float,
         default=None,
         metavar="T",
-        help="prior_graph=correlation: keep edges with |Pearson r| >= T (e.g. 0.1). "
-        "When set, --top_k is ignored.",
+        help="prior_graph=correlation: keep edges with |Pearson r| >= T. "
+        "Alone: legacy all-pairs threshold (ignores --top_k). "
+        "With train_pos_union_corr: combined with --top_k (default recipe |r|>=0.1, top_k=100).",
+    )
+    p.add_argument(
+        "--corr_min",
+        type=float,
+        default=None,
+        metavar="T",
+        help="Signed Pearson threshold for prior_graph=correlation: keep neighbors with "
+        "r_ij > T, then take --top_k by descending r.",
     )
     p.add_argument(
         "--prior_graph",
@@ -309,13 +389,19 @@ def parse_args(argv: Optional[list[str]] = None):
             "gold",
             "gold_pearson",
             "train_pos_pearson",
+            "train_pos_uniform",
+            "train_pos_union_corr",
             "grnboost2",
         ),
         default="train_pos_pearson",
         help="scGT-Link v2 default=train_pos_pearson (train-only positives + Pearson r; avoids gold leakage). "
-        "correlation: Pearson |r| top-k graph. gold: reference network from --gold_network_file (optional CSV weights). "
+        "correlation: Pearson graph (--top_k and/or --corr_min / --corr_min_abs). "
+        "gold: reference network from --gold_network_file (optional CSV weights). "
         "gold_pearson: gold edges + Pearson r as weights (directed structure via edata['dir']). "
-        "train_pos_pearson: only Train_set Label=1 edges + Pearson r (ignores --gold_network_file; aligns with train-only adjacency). "
+        "train_pos_pearson: only Train_set Label=1 edges + Pearson r. "
+        "train_pos_uniform: same train-pos topology with w=1. "
+        "train_pos_union_corr: union of train-pos edges and correlation edges "
+        "(default recipe: --top_k 100 --corr_min_abs 0.1, i.e. |r|>=0.1 then top-k). "
         "grnboost2: arboreto GRNBoost2 prior + top_k pruning (requires TF names).",
     )
     p.add_argument(
@@ -418,6 +504,26 @@ def parse_args(argv: Optional[list[str]] = None):
         action="store_true",
         help="Ablation: zero Laplacian positional encoding (expr encoder + GraphTransformer entry). "
         "Prior graph structure for message passing is unchanged.",
+    )
+    p.add_argument(
+        "--no_gt_ffn",
+        action="store_true",
+        help="Ablation: remove the position-wise FFN inside each GraphTransformer layer "
+        "(attention/mean-agg block only).",
+    )
+    p.add_argument(
+        "--no_gt_residual",
+        action="store_true",
+        help="Ablation: remove residual connections in each GraphTransformer layer "
+        "(both attention and FFN branches when present).",
+    )
+    p.add_argument(
+        "--gt_agg",
+        type=str,
+        choices=("attn", "mean"),
+        default="attn",
+        help="GraphTransformer neighbor mixing: attn=SparseMHA (default); "
+        "mean=degree-normalized mean aggregation (attention ablation, still on the prior graph).",
     )
     p.add_argument(
         "--test_prob_threshold",
@@ -524,7 +630,11 @@ def _make_ckpt_meta(
             )
         ),
         "use_directed_edge_attn": use_dir_attn,
+        "struct_pe": get_structural_pe_name(),
         "no_lappe": bool(args.no_lappe),
+        "use_gt_ffn": not bool(getattr(args, "no_gt_ffn", False)),
+        "use_gt_residual": not bool(getattr(args, "no_gt_residual", False)),
+        "gt_agg": str(getattr(args, "gt_agg", "attn")),
         "nhead": args.nhead,
         "num_layers": args.num_layers,
         "dim_feedforward": args.dim_feedforward,
@@ -547,6 +657,115 @@ def _gt_variant_from_meta_or_args(meta: dict, args: Namespace) -> str:
     if meta:
         return "legacy"
     return str(getattr(args, "gt_variant", "directed"))
+
+
+def _filter_compatible_state_dict(
+    module: nn.Module,
+    state_dict: dict,
+    *,
+    skip_name_substrings: tuple[str, ...] = ("scgpt_gene_emb",),
+) -> tuple[dict, list[str]]:
+    """Keep only keys present in ``module`` with identical shapes; drop gene-table buffers."""
+    model_sd = module.state_dict()
+    filtered: dict = {}
+    notes: list[str] = []
+    for k, v in state_dict.items():
+        if any(s in k for s in skip_name_substrings):
+            notes.append(f"skip {k} (gene-specific buffer)")
+            continue
+        if k not in model_sd:
+            notes.append(f"skip {k} (not in target module)")
+            continue
+        if not hasattr(v, "shape") or tuple(model_sd[k].shape) != tuple(v.shape):
+            shape = tuple(v.shape) if hasattr(v, "shape") else type(v)
+            notes.append(f"skip {k} (shape {shape} != {tuple(model_sd[k].shape)})")
+            continue
+        filtered[k] = v
+    return filtered, notes
+
+
+def _init_weights_from_checkpoint(
+    args: Namespace,
+    device: torch.device,
+    seq_model: nn.Module,
+    gt_model: GraphTransformer,
+    predictor: LinkPredictor,
+) -> None:
+    """Transfer-compatible weight init (cross-dataset). Does not touch optimizer/epoch."""
+    path_str = getattr(args, "init_weights_from", "").strip()
+    if not path_str:
+        return
+    if bool(getattr(args, "resume", False)) or getattr(args, "resume_from", "").strip():
+        raise SystemExit("Cannot combine --init_weights_from with --resume / --resume_from.")
+
+    ckpt_path = Path(path_str).expanduser().resolve()
+    if not ckpt_path.is_file():
+        raise SystemExit(f"--init_weights_from not found: {ckpt_path}")
+
+    ckpt = torch.load(ckpt_path, map_location=device)
+    loaded_counts: list[str] = []
+    for name, module, key in (
+        ("seq_model", seq_model, "seq_model"),
+        ("gt_model", gt_model, "gt_model"),
+        ("predictor", predictor, "predictor"),
+    ):
+        if key not in ckpt:
+            print(f"[init_weights_from] missing key {key} in {ckpt_path.name}", flush=True)
+            continue
+        filtered, notes = _filter_compatible_state_dict(module, ckpt[key])
+        module.load_state_dict(filtered, strict=False)
+        n_tgt = len(module.state_dict())
+        loaded_counts.append(f"{name}={len(filtered)}/{n_tgt}")
+        for note in notes[:8]:
+            print(f"[init_weights_from] {note}", flush=True)
+        if len(notes) > 8:
+            print(f"[init_weights_from] ... +{len(notes) - 8} more skips for {name}", flush=True)
+
+    print(
+        f"[init_weights_from] loaded compatible tensors from {ckpt_path} ({', '.join(loaded_counts)}); "
+        "optimizer fresh; start epoch 1",
+        flush=True,
+    )
+
+
+def _apply_freeze_modules(
+    args: Namespace,
+    seq_model: nn.Module,
+    gt_model: GraphTransformer,
+    predictor: LinkPredictor,
+) -> None:
+    raw = getattr(args, "freeze_modules", "").strip()
+    if not raw:
+        return
+    names = {x.strip().lower() for x in raw.split(",") if x.strip()}
+    allowed = {"seq", "gt", "predictor"}
+    unknown = names - allowed
+    if unknown:
+        raise SystemExit(f"--freeze_modules unknown entries {sorted(unknown)}; use {sorted(allowed)}")
+    if "seq" in names:
+        for p in seq_model.parameters():
+            p.requires_grad = False
+    if "gt" in names:
+        for p in gt_model.parameters():
+            p.requires_grad = False
+    if "predictor" in names:
+        for p in predictor.parameters():
+            p.requires_grad = False
+    n_trainable = sum(
+        int(p.numel())
+        for p in list(seq_model.parameters()) + list(gt_model.parameters()) + list(predictor.parameters())
+        if p.requires_grad
+    )
+    n_total = sum(
+        int(p.numel())
+        for p in list(seq_model.parameters()) + list(gt_model.parameters()) + list(predictor.parameters())
+    )
+    print(
+        f"[freeze_modules] frozen={sorted(names)} | trainable params={n_trainable}/{n_total}",
+        flush=True,
+    )
+    if n_trainable == 0:
+        raise SystemExit("--freeze_modules left zero trainable parameters.")
 
 
 def _resume_training_state(
@@ -946,6 +1165,7 @@ def run_training(args: Namespace) -> dict:
             expr_cpu,
             top_k=args.top_k,
             min_abs_corr=args.corr_min_abs,
+            min_corr=args.corr_min,
         )
     elif args.prior_graph == "gold":
         if not args.gold_network_file.strip():
@@ -978,6 +1198,30 @@ def run_training(args: Namespace) -> dict:
                 train_ei.detach().cpu(),
                 train_y.detach().cpu(),
                 expr_cpu,
+                edge_weight="pearson",
+            )
+        except (ValueError, RuntimeError) as e:
+            raise SystemExit(str(e)) from e
+    elif args.prior_graph == "train_pos_uniform":
+        try:
+            g = build_train_positive_pearson_graph(
+                train_ei.detach().cpu(),
+                train_y.detach().cpu(),
+                expr_cpu,
+                edge_weight="ones",
+            )
+        except (ValueError, RuntimeError) as e:
+            raise SystemExit(str(e)) from e
+    elif args.prior_graph == "train_pos_union_corr":
+        try:
+            g = build_train_pos_union_corr_graph(
+                train_ei.detach().cpu(),
+                train_y.detach().cpu(),
+                expr_cpu,
+                top_k=args.top_k,
+                min_abs_corr=(
+                    float(args.corr_min_abs) if args.corr_min_abs is not None else 0.1
+                ),
             )
         except (ValueError, RuntimeError) as e:
             raise SystemExit(str(e)) from e
@@ -1004,7 +1248,7 @@ def run_training(args: Namespace) -> dict:
         raise SystemExit(f"Unknown prior_graph={args.prior_graph!r}")
     g = g.to(device)
     with torch.no_grad():
-        pe = dgl.lap_pe(g, k=in_dim, padding=True)
+        pe = compute_structural_pe(g, in_dim)
     pe = pe.to(device=device, dtype=gene_expr.dtype)
     if args.no_lappe:
         pe = torch.zeros_like(pe)
@@ -1083,6 +1327,8 @@ def run_training(args: Namespace) -> dict:
             "gold",
             "gold_pearson",
             "train_pos_pearson",
+            "train_pos_uniform",
+            "train_pos_union_corr",
             "grnboost2",
         )
         and not args.no_edge_dir_attn
@@ -1104,6 +1350,9 @@ def run_training(args: Namespace) -> dict:
         scgpt_in_dim=in_dim if triple_fuse else None,
         gt_variant=getattr(args, "gt_variant", "directed"),
         dropout=float(args.dropout),
+        use_ffn=not bool(getattr(args, "no_gt_ffn", False)),
+        use_residual=not bool(getattr(args, "no_gt_residual", False)),
+        gt_agg=str(getattr(args, "gt_agg", "attn")),
     ).to(device)
     predictor = _link_predictor_from_meta_or_args({}, args).to(device)
 
@@ -1124,13 +1373,6 @@ def run_training(args: Namespace) -> dict:
     n_neg = float((train_y == 0).sum().item())
     pos_weight = torch.tensor([n_neg / max(n_pos, 1.0)], device=device)
     loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
-    params = (
-        list(seq_model.parameters())
-        + list(gt_model.parameters())
-        + list(predictor.parameters())
-    )
-    opt = torch.optim.AdamW(params, lr=args.lr)
 
     val_pos = val_ei[:, val_y == 1]
     val_neg = val_ei[:, val_y == 0]
@@ -1166,6 +1408,9 @@ def run_training(args: Namespace) -> dict:
             else ""
         )
         + f" | gt_variant={getattr(args, 'gt_variant', 'directed')}"
+        + f" | gt_agg={getattr(args, 'gt_agg', 'attn')}"
+        + f" | gt_ffn={'off' if getattr(args, 'no_gt_ffn', False) else 'on'}"
+        + f" | gt_residual={'off' if getattr(args, 'no_gt_residual', False) else 'on'}"
         + f" | ckpt_metric={getattr(args, 'ckpt_metric', 'auroc')}"
         + (
             f" | hard_neg_mix={args.hard_neg_mix:g}/pool={args.hard_neg_pool_frac:g}"
@@ -1182,6 +1427,20 @@ def run_training(args: Namespace) -> dict:
     progress_path = out_dir / "training_progress.jsonl"
     if not args.resume and not getattr(args, "resume_from", "").strip():
         progress_path.write_text("", encoding="utf-8")
+
+    _init_weights_from_checkpoint(args, device, seq_model, gt_model, predictor)
+    _apply_freeze_modules(args, seq_model, gt_model, predictor)
+
+    params = [
+        p
+        for p in (
+            list(seq_model.parameters())
+            + list(gt_model.parameters())
+            + list(predictor.parameters())
+        )
+        if p.requires_grad
+    ]
+    opt = torch.optim.AdamW(params, lr=args.lr)
 
     start_epoch, best_val_score, best_epoch, history, elapsed_prior = _resume_training_state(
         out_dir, args, device, seq_model, gt_model, predictor, opt
@@ -1381,6 +1640,11 @@ def run_training(args: Namespace) -> dict:
         scgpt_in_dim=int(meta.get("d_model", in_dim)) if triple_fuse_eval else None,
         gt_variant=_gt_variant_from_meta_or_args(meta, args),
         dropout=float(args.dropout),
+        use_ffn=bool(meta.get("use_gt_ffn", not bool(getattr(args, "no_gt_ffn", False)))),
+        use_residual=bool(
+            meta.get("use_gt_residual", not bool(getattr(args, "no_gt_residual", False)))
+        ),
+        gt_agg=str(meta.get("gt_agg", getattr(args, "gt_agg", "attn"))),
     ).to(device)
     sd_seq = ckpt["seq_model"]
     if expr_enc_saved == "scgpt":

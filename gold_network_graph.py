@@ -236,17 +236,26 @@ def build_train_positive_pearson_graph(
     expr: torch.Tensor,
     *,
     add_self_loops: bool = True,
+    edge_weight: str = "pearson",
 ) -> dgl.DGLGraph:
     """
     Prior graph edges = **only** ``Train_set`` rows with Label==1 (directed TF→target indices).
 
-    Each edge weight is the Pearson correlation between regulator and target across cells
-    (same numeric ``r`` field as :func:`build_gold_pearson_graph` before min–max inside
-    :func:`_triples_to_dgl`). Duplicate directed pairs keep the larger ``r``.
+    ``edge_weight``:
+      - ``pearson``: Pearson correlation between regulator and target across cells
+        (same numeric ``r`` field as :func:`build_gold_pearson_graph` before min–max inside
+        :func:`_triples_to_dgl`). Duplicate directed pairs keep the larger ``r``.
+      - ``ones``: same train-positive topology, but every edge weight is 1.0
+        (ablation: structure without Pearson magnitude).
 
     ``train_edge_index``: long ``(2, E)`` with gene row indices (same convention as split CSVs).
-    ``expr``: ``(G, C)`` genes × cells.
+    ``expr``: ``(G, C)`` genes × cells (still required for ``pearson``; unused for ``ones``
+    except to size the graph).
     """
+    edge_weight = str(edge_weight).lower().strip()
+    if edge_weight not in ("pearson", "ones"):
+        raise ValueError(f"edge_weight must be 'pearson' or 'ones', got {edge_weight!r}")
+
     ei = train_edge_index.detach().long().cpu()
     y = train_labels.detach().float().cpu().view(-1)
     pos = y > 0.5
@@ -262,6 +271,73 @@ def build_train_positive_pearson_graph(
         raise ValueError(
             f"train_pos_pearson: edge index {hi} out of range for expr with {g_n} genes."
         )
+
+    if edge_weight == "ones":
+        best_r: dict[Tuple[int, int], float] = {}
+        for a, b in zip(src.tolist(), dst.tolist()):
+            i, j = int(a), int(b)
+            if i == j:
+                continue
+            best_r[(i, j)] = 1.0
+    else:
+        r_full = np.corrcoef(z)
+        np.nan_to_num(r_full, copy=False, nan=0.0)
+        best_r = {}
+        for a, b in zip(src.tolist(), dst.tolist()):
+            i, j = int(a), int(b)
+            if i == j:
+                continue
+            rij = float(r_full[i, j])
+            prev = best_r.get((i, j))
+            if prev is None or rij > prev:
+                best_r[(i, j)] = rij
+
+    if not best_r:
+        raise RuntimeError(
+            "train_pos_pearson: no usable directed edges (only self-loop positives?)."
+        )
+
+    triples = [(i, j, w) for (i, j), w in best_r.items()]
+    return _triples_to_dgl(triples, g_n, add_self_loops=add_self_loops)
+
+
+def build_train_pos_union_corr_graph(
+    train_edge_index: torch.Tensor,
+    train_labels: torch.Tensor,
+    expr: torch.Tensor,
+    *,
+    top_k: int = 100,
+    min_abs_corr: float = 0.1,
+    add_self_loops: bool = True,
+) -> dgl.DGLGraph:
+    """
+    Fuse known training-positive edges with a filtered Pearson correlation graph.
+
+    * Train-pos: directed Label=1 edges from ``Train_set`` (weights = Pearson r).
+    * Correlation: for each gene, neighbors with ``|r_ij| >= min_abs_corr``, then
+      top-``top_k`` by ``|r_ij|``; each undirected pair is stored once and expanded
+      by ``_triples_to_dgl``.
+
+    Duplicate directed pairs keep the larger Pearson weight.
+    """
+    from correlation_graph import select_correlation_pairs
+
+    ei = train_edge_index.detach().long().cpu()
+    y = train_labels.detach().float().cpu().view(-1)
+    pos = y > 0.5
+    src = ei[0, pos]
+    dst = ei[1, pos]
+    if src.numel() == 0:
+        raise RuntimeError("train_pos_union_corr: no positive edges in Train_set.")
+
+    z = expr.detach().float().cpu().numpy()
+    g_n = z.shape[0]
+    hi = int(ei.max().item())
+    if hi >= g_n:
+        raise ValueError(
+            f"train_pos_union_corr: edge index {hi} out of range for expr with {g_n} genes."
+        )
+
     r_full = np.corrcoef(z)
     np.nan_to_num(r_full, copy=False, nan=0.0)
 
@@ -275,10 +351,92 @@ def build_train_positive_pearson_graph(
         if prev is None or rij > prev:
             best_r[(i, j)] = rij
 
+    pairs = select_correlation_pairs(
+        r_full,
+        top_k=top_k,
+        min_abs_corr=float(min_abs_corr),
+        abs_with_top_k=True,
+    )
+    # One undirected corr triple per unordered pair → _triples_to_dgl adds both dirs.
+    seen_undirected: Set[Tuple[int, int]] = set()
+    for i, j in pairs:
+        if i == j:
+            continue
+        a, b = (i, j) if i < j else (j, i)
+        if (a, b) in seen_undirected:
+            continue
+        seen_undirected.add((a, b))
+        rij = float(r_full[a, b])
+        prev = best_r.get((a, b))
+        if prev is None or rij > prev:
+            best_r[(a, b)] = rij
+
     if not best_r:
-        raise RuntimeError(
-            "train_pos_pearson: no usable directed edges (only self-loop positives?)."
-        )
+        raise RuntimeError("train_pos_union_corr: no usable edges after fusion.")
 
     triples = [(i, j, w) for (i, j), w in best_r.items()]
     return _triples_to_dgl(triples, g_n, add_self_loops=add_self_loops)
+
+
+def build_self_loop_graph(n_genes: int) -> dgl.DGLGraph:
+    """Prior with only self-loops (no inter-gene edges). For no-graph / MLP-only ablations."""
+    g_n = int(n_genes)
+    if g_n < 1:
+        raise ValueError("n_genes must be >= 1")
+    idx = torch.arange(g_n, dtype=torch.int64)
+    g = dgl.graph((idx, idx), num_nodes=g_n)
+    ones = torch.ones(g_n, dtype=torch.float32)
+    zeros = torch.zeros(g_n, dtype=torch.float32)
+    g.edata["w"] = ones
+    g.edata["dir"] = zeros
+    g.edata["tf2t"] = zeros
+    return g
+
+
+def build_random_prior_graph(
+    n_genes: int,
+    n_directed_edges: int,
+    *,
+    seed: int = 42,
+    add_self_loops: bool = True,
+) -> dgl.DGLGraph:
+    """
+    Random directed prior with ``n_directed_edges`` unique i→j pairs (i≠j), weights=1.
+
+    Uses the same bidirectional ``dir`` layout as gold/train_pos via ``_triples_to_dgl``.
+    """
+    g_n = int(n_genes)
+    n_e = int(n_directed_edges)
+    if g_n < 2:
+        raise ValueError("Need at least 2 genes for a random prior.")
+    max_e = g_n * (g_n - 1)
+    if n_e < 1:
+        raise ValueError(f"n_directed_edges must be >= 1, got {n_e}")
+    if n_e > max_e:
+        n_e = max_e
+
+    rng = np.random.default_rng(int(seed))
+    # Sample without replacement from the flat off-diagonal index space.
+    chosen = rng.choice(max_e, size=n_e, replace=False)
+    triples: List[Tuple[int, int, float]] = []
+    for flat in chosen.tolist():
+        i = int(flat) // (g_n - 1)
+        j = int(flat) % (g_n - 1)
+        if j >= i:
+            j += 1
+        triples.append((i, j, 1.0))
+    return _triples_to_dgl(triples, g_n, add_self_loops=add_self_loops)
+
+
+def count_train_positive_directed_edges(
+    train_edge_index: torch.Tensor,
+    train_labels: torch.Tensor,
+) -> int:
+    """Unique directed TF→target positives in Train_set (excluding self-loops)."""
+    ei = train_edge_index.detach().long().cpu()
+    y = train_labels.detach().float().cpu().view(-1)
+    pos = y > 0.5
+    src = ei[0, pos]
+    dst = ei[1, pos]
+    pairs = {(int(a), int(b)) for a, b in zip(src.tolist(), dst.tolist()) if int(a) != int(b)}
+    return len(pairs)

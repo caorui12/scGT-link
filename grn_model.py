@@ -2,7 +2,10 @@
 
 ``ScGPTGeneExpressionEncoder`` (``--expr_encoder scgpt``) ignores ``gene_expr`` and uses
 pretrained scGPT token embeddings + structural PE. Dual-encoder ``scgpt_concat`` remains available.
+``LapPEOnlyEncoder`` (``--expr_encoder lappe``) drops scGPT and returns LapPE only (w/o-scGPT ablation).
 """
+
+from __future__ import annotations
 
 import torch
 import torch.nn as nn
@@ -13,6 +16,20 @@ def _make_transformer_encoder(enc_layer: nn.TransformerEncoderLayer, num_layers:
     if num_layers <= 0:
         return nn.Identity()
     return nn.TransformerEncoder(enc_layer, num_layers=num_layers)
+
+
+class LapPEOnlyEncoder(nn.Module):
+    """
+    Ablation encoder for w/o scGPT: node features are Laplacian PE only.
+    ``gene_expr`` is ignored (API-compatible with other gene encoders). No learnable params.
+    """
+
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.d_model = d_model
+
+    def forward(self, gene_expr: torch.Tensor, structural_pe: torch.Tensor) -> torch.Tensor:
+        return structural_pe
 
 
 class ScGPTGeneExpressionEncoder(nn.Module):

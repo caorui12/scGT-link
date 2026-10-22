@@ -167,6 +167,83 @@ class SparseMHA(nn.Module):
         return self.out_proj(out)
 
 
+class SparseMeanAgg(nn.Module):
+    """Degree-normalized mean aggregation on prior-graph edges (attention ablation).
+
+    Same aggregate direction and optional ``[w, dir]`` value messages as SparseMHA,
+    but neighbor weights are uniform ``1/degree`` instead of QK softmax.
+    """
+
+    def __init__(
+        self,
+        hidden_dim=80,
+        num_heads=8,
+        *,
+        aggregate: str = "dst",
+        use_edge_message: bool = False,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        if hidden_dim % num_heads != 0:
+            raise ValueError(f"hidden_dim ({hidden_dim}) must be divisible by num_heads ({num_heads})")
+        aggregate = str(aggregate).lower().strip()
+        if aggregate not in ("src", "dst"):
+            raise ValueError(f"aggregate must be 'src' or 'dst', got {aggregate!r}")
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.aggregate = aggregate
+        self.use_edge_message = use_edge_message
+        self.attn_drop = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
+        self.linear_v = nn.Linear(hidden_dim, hidden_dim)
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+        if use_edge_message:
+            self.edge_msg_mlp = nn.Sequential(
+                nn.Linear(2, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+            )
+
+    def forward(self, g, h):
+        N = h.size(0)
+        nh = self.num_heads
+        dh = self.hidden_dim // nh
+        device = h.device
+        src, dst = g.edges()
+        E = src.numel()
+
+        v = self.linear_v(h).reshape(N, dh, nh)
+        if self.aggregate == "dst":
+            neighbor_v = v[src]
+            group = dst
+        else:
+            neighbor_v = v[dst]
+            group = src
+
+        if self.use_edge_message and hasattr(self, "edge_msg_mlp"):
+            if "w" in g.edata:
+                w = g.edata["w"].to(device=device, dtype=h.dtype).reshape(-1)
+            else:
+                w = torch.zeros(E, device=device, dtype=h.dtype)
+            if "dir" in g.edata:
+                ddir = g.edata["dir"].to(device=device, dtype=h.dtype).reshape(-1)
+            else:
+                ddir = torch.zeros(E, device=device, dtype=h.dtype)
+            e_msg = self.edge_msg_mlp(torch.stack([w, ddir], dim=-1)).reshape(E, dh, nh)
+            neighbor_v = neighbor_v + e_msg
+
+        deg = torch.zeros(N, device=device, dtype=h.dtype)
+        ones = torch.ones(E, device=device, dtype=h.dtype)
+        deg.index_add_(0, group, ones)
+        inv_deg = 1.0 / deg.clamp(min=1.0)
+        weights = self.attn_drop(inv_deg[group])  # [E]
+
+        weighted = weights.unsqueeze(1).unsqueeze(2) * neighbor_v  # [E, dh, nh]
+        out = torch.zeros(N, dh, nh, device=device, dtype=h.dtype)
+        out.index_add_(0, group, weighted)
+        out = out.reshape(N, -1)
+        return self.out_proj(out)
+
+
 class GTLayer(nn.Module):
     def __init__(
         self,
@@ -179,17 +256,35 @@ class GTLayer(nn.Module):
         use_edge_message: bool = False,
         norm_type: str = "bn",
         dropout: float = 0.0,
+        use_ffn: bool = True,
+        use_residual: bool = True,
+        gt_agg: str = "attn",
     ):
         super().__init__()
-        self.attention = SparseMHA(
-            hidden_dim,
-            num_heads,
-            use_edge_weight_bias=use_edge_weight_bias,
-            use_directed_edge_bias=use_directed_edge_bias,
-            aggregate=aggregate,
-            use_edge_message=use_edge_message,
-            dropout=dropout,
-        )
+        gt_agg = str(gt_agg).lower().strip()
+        if gt_agg not in ("attn", "mean"):
+            raise ValueError(f"gt_agg must be 'attn' or 'mean', got {gt_agg!r}")
+        self.gt_agg = gt_agg
+        self.use_ffn = bool(use_ffn)
+        self.use_residual = bool(use_residual)
+        if gt_agg == "mean":
+            self.attention = SparseMeanAgg(
+                hidden_dim,
+                num_heads,
+                aggregate=aggregate,
+                use_edge_message=use_edge_message,
+                dropout=dropout,
+            )
+        else:
+            self.attention = SparseMHA(
+                hidden_dim,
+                num_heads,
+                use_edge_weight_bias=use_edge_weight_bias,
+                use_directed_edge_bias=use_directed_edge_bias,
+                aggregate=aggregate,
+                use_edge_message=use_edge_message,
+                dropout=dropout,
+            )
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.norm_type = str(norm_type).lower().strip()
@@ -197,35 +292,53 @@ class GTLayer(nn.Module):
 
         if self.norm_type == "ln":
             self.norm1 = nn.LayerNorm(hidden_dim)
-            self.norm2 = nn.LayerNorm(hidden_dim)
+            self.norm2 = nn.LayerNorm(hidden_dim) if self.use_ffn else None
         else:
             # Legacy attribute names (bn1/bn2) for older checkpoints.
             self.bn1 = nn.BatchNorm1d(hidden_dim)
-            self.bn2 = nn.BatchNorm1d(hidden_dim)
+            self.bn2 = nn.BatchNorm1d(hidden_dim) if self.use_ffn else None
 
-        if dropout and dropout > 0:
-            self.ffn = nn.Sequential(
-                nn.Linear(hidden_dim, 2 * hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(2 * hidden_dim, hidden_dim),
-            )
+        if self.use_ffn:
+            if dropout and dropout > 0:
+                self.ffn = nn.Sequential(
+                    nn.Linear(hidden_dim, 2 * hidden_dim),
+                    nn.ReLU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(2 * hidden_dim, hidden_dim),
+                )
+            else:
+                # Match legacy checkpoint key layout: ffn.0 / ffn.2
+                self.ffn = nn.Sequential(
+                    nn.Linear(hidden_dim, 2 * hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(2 * hidden_dim, hidden_dim),
+                )
         else:
-            # Match legacy checkpoint key layout: ffn.0 / ffn.2
-            self.ffn = nn.Sequential(
-                nn.Linear(hidden_dim, 2 * hidden_dim),
-                nn.ReLU(),
-                nn.Linear(2 * hidden_dim, hidden_dim),
-            )
+            self.ffn = None
+
+    def _norm1(self, x):
+        if self.norm_type == "ln":
+            return self.norm1(x)
+        return self.bn1(x)
+
+    def _norm2(self, x):
+        if self.norm_type == "ln":
+            return self.norm2(x)
+        return self.bn2(x)
 
     def forward(self, A, h):
         h1 = self.attention(A, h)
-        if self.norm_type == "ln":
-            h = self.norm1(h + self.dropout(h1))
-            h = self.norm2(h + self.dropout(self.ffn(h)))
+        if self.use_residual:
+            h = self._norm1(h + self.dropout(h1))
         else:
-            h = self.bn1(h + self.dropout(h1))
-            h = self.bn2(h + self.dropout(self.ffn(h)))
+            h = self._norm1(self.dropout(h1))
+        if not self.use_ffn or self.ffn is None:
+            return h
+        h2 = self.ffn(h)
+        if self.use_residual:
+            h = self._norm2(h + self.dropout(h2))
+        else:
+            h = self._norm2(self.dropout(h2))
         return h
 
 
@@ -253,6 +366,9 @@ class GraphTransformer(nn.Module):
         skip_pos_at_gt: bool = False,
         gt_variant: str = "directed",
         dropout: float = 0.0,
+        use_ffn: bool = True,
+        use_residual: bool = True,
+        gt_agg: str = "attn",
     ):
         super().__init__()
         self.triple_fuse = triple_fuse
@@ -261,6 +377,9 @@ class GraphTransformer(nn.Module):
         if gt_variant not in ("legacy", "directed"):
             raise ValueError(f"gt_variant must be 'legacy' or 'directed', got {gt_variant!r}")
         self.gt_variant = gt_variant
+        self.use_ffn = bool(use_ffn)
+        self.use_residual = bool(use_residual)
+        self.gt_agg = str(gt_agg).lower().strip()
         directed = gt_variant == "directed"
         aggregate = "dst" if directed else "src"
         use_edge_message = directed
@@ -291,6 +410,9 @@ class GraphTransformer(nn.Module):
                     use_edge_message=use_edge_message,
                     norm_type=norm_type,
                     dropout=drop,
+                    use_ffn=self.use_ffn,
+                    use_residual=self.use_residual,
+                    gt_agg=self.gt_agg,
                 )
                 for _ in range(num_layers)
             ]
