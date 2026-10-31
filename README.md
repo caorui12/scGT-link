@@ -2,16 +2,32 @@
 
 Reproduction demo for **scGT-Link**: an scGPT-informed directed graph transformer for supervised gene regulatory network (GRN) link prediction.
 
-This repository contains a **demo** codebase and **one** BEELINE demo dataset (STRING / hESC / TFs+500).Full dataset will lanuch later.
+This branch (`main`) contains a **minimal, self-contained demo** and **one** BEELINE task (STRING / hESC / TFs+500).
 
-## What this is
+For the **full training code**, unconfounded ablation settings (Fig. 5 / Table S5), HomoloGene remapping scripts, and locked BEELINE configs, use branch **`scGT-link_v2`**:
 
-1. Prior graph = train-positive edges only, Pearson-weighted (`train_pos_pearson`)
+https://github.com/caorui12/scGT-link/tree/scGT-link_v2
+
+See also `docs/CODE_AVAILABILITY.md` on that branch (scGPT checkpoint ID, gene mapping, and per-run configuration).
+
+## What this demo is
+
+1. Prior graph = known training edges only, Pearson-weighted (`train_pos_pearson`)
 2. Node features = frozen scGPT gene embeddings + Laplacian PE
 3. Directed sparse Graph Transformer (L=2, H=4, hidden=128)
 4. Concat MLP link head + weighted BCE
 
-Precomputed scGPT embeddings are included under `scGPT/`. You do **not** need the full scGPT checkpoint or the `scgpt` Python package to train.
+Precomputed scGPT embeddings are included under `scGPT/`. You do **not** need the full scGPT checkpoint or the `scgpt` Python package to run this demo.
+
+## scGPT checkpoint used to build embeddings
+
+Demo embeddings were extracted from the released **scGPT human** checkpoint (cellxgene census human):
+
+- Model zoo: https://github.com/bowang-lab/scGPT#pretrained-scgpt-model-zoo
+- Required files when regenerating embeddings: `args.json`, `vocab.json`, `best_model.pt`
+- Gene mapping (default): exact then case-insensitive symbol match into the human vocabulary; missing genes use the pad embedding
+
+On `scGT-link_v2`, `scGPT_human/args.json` and `scGPT_human/vocab.json` are tracked; download `best_model.pt` separately (large file).
 
 ## Layout
 
@@ -61,8 +77,6 @@ pip install numpy pandas scikit-learn
 
 ## How to run
 
-Same style as GT-GRN:
-
 ```bash
 cd src/
 python main.py
@@ -76,4 +90,3 @@ Outputs (repo root):
 - `out/STRING_hESC_TFs500/results.json`
 
 GPU is used automatically when available. Force CPU with `--cpu`.
-
