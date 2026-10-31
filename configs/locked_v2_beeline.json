@@ -1,0 +1,35 @@
+{
+  "_comment": "Locked scGT-Link v2 recipe for the 44 BEELINE tasks (manuscript Table S4 / Fig. 2–5).",
+  "epochs": 200,
+  "lr": 3e-4,
+  "d_model": 768,
+  "gt_num_layers": 2,
+  "gt_num_heads": 4,
+  "gt_variant": "directed",
+  "expr_encoder": "scgpt",
+  "prior_graph": "train_pos_pearson",
+  "seeds_primary": [42, 123, 456],
+  "ablation_seed": 42,
+  "checkpoint_selection": "best validation AUROC",
+  "scgpt_checkpoint": {
+    "name": "scGPT human (cellxgene census)",
+    "local_dir_example": "scGPT_human/",
+    "required_files": ["args.json", "vocab.json", "best_model.pt"],
+    "download": "https://github.com/bowang-lab/scGPT#pretrained-scgpt-model-zoo",
+    "note": "best_model.pt is not shipped in git (large); args.json and vocab.json are tracked under scGPT_human/."
+  },
+  "gene_mapping": {
+    "default": "exact then case-insensitive symbol match into the human scGPT vocabulary; missing genes use the pad embedding",
+    "homologene_sensitivity": "scripts/build_mouse_human_ortholog_map.py then scripts/precompute_mouse_scgpt_ortholog_emb.py"
+  },
+  "common_ablation_flags": {
+    "wo_message_passing_keep_lappe": "--gt_num_layers 0 (keep LapPE)",
+    "wo_lappe_keep_gt": "--no_lappe",
+    "wo_scgpt_lappe_only": "disable scGPT features / LapPE-only encoder path",
+    "gene_permuted_scgpt": "--shuffle_scgpt",
+    "constant_edge_weight": "--prior_graph train_pos_uniform",
+    "shuffled_edge_weight": "--prior_graph train_pos_shuffled_w",
+    "density_matched_random_prior": "--prior_graph random",
+    "degree_preserving_rewire": "--prior_graph degree_rewire"
+  }
+}

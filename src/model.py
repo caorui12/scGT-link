@@ -244,6 +244,58 @@ class SparseMeanAgg(nn.Module):
         return self.out_proj(out)
 
 
+def _ffn_inner_dim(hidden_dim: int, expansion: float) -> int:
+    inner = int(round(float(expansion) * int(hidden_dim)))
+    return max(2, inner + (inner % 2))  # even, at least 2
+
+
+class _SwiGLUFFN(nn.Module):
+    """SwiGLU FFN: gated SiLU path + linear-up, then project down."""
+
+    def __init__(self, hidden_dim: int, expansion: float = 2.0, dropout: float = 0.0):
+        super().__init__()
+        inner = _ffn_inner_dim(hidden_dim, expansion)
+        self.w_gate = nn.Linear(hidden_dim, inner)
+        self.w_up = nn.Linear(hidden_dim, inner)
+        self.w_down = nn.Linear(inner, hidden_dim)
+        self.drop = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
+
+    def forward(self, x):
+        return self.w_down(self.drop(F.silu(self.w_gate(x)) * self.w_up(x)))
+
+
+def _build_gt_ffn(
+    hidden_dim: int,
+    *,
+    expansion: float = 2.0,
+    activation: str = "relu",
+    dropout: float = 0.0,
+) -> nn.Module:
+    act = str(activation).lower().strip()
+    if act == "swiglu":
+        return _SwiGLUFFN(hidden_dim, expansion=expansion, dropout=dropout)
+    inner = _ffn_inner_dim(hidden_dim, expansion)
+    if act == "gelu":
+        act_mod: nn.Module = nn.GELU()
+    elif act == "relu":
+        act_mod = nn.ReLU()
+    else:
+        raise ValueError(f"ffn_activation must be relu|gelu|swiglu, got {activation!r}")
+    if dropout and dropout > 0:
+        return nn.Sequential(
+            nn.Linear(hidden_dim, inner),
+            act_mod,
+            nn.Dropout(dropout),
+            nn.Linear(inner, hidden_dim),
+        )
+    # Legacy key layout for expansion==2 + relu + no dropout: ffn.0 / ffn.2
+    return nn.Sequential(
+        nn.Linear(hidden_dim, inner),
+        act_mod,
+        nn.Linear(inner, hidden_dim),
+    )
+
+
 class GTLayer(nn.Module):
     def __init__(
         self,
@@ -259,14 +311,23 @@ class GTLayer(nn.Module):
         use_ffn: bool = True,
         use_residual: bool = True,
         gt_agg: str = "attn",
+        ffn_expansion: float = 2.0,
+        ffn_activation: str = "relu",
+        norm_placement: str = "post",
     ):
         super().__init__()
         gt_agg = str(gt_agg).lower().strip()
         if gt_agg not in ("attn", "mean"):
             raise ValueError(f"gt_agg must be 'attn' or 'mean', got {gt_agg!r}")
+        placement = str(norm_placement).lower().strip()
+        if placement not in ("post", "pre"):
+            raise ValueError(f"norm_placement must be 'post' or 'pre', got {norm_placement!r}")
         self.gt_agg = gt_agg
         self.use_ffn = bool(use_ffn)
         self.use_residual = bool(use_residual)
+        self.norm_placement = placement
+        self.ffn_expansion = float(ffn_expansion)
+        self.ffn_activation = str(ffn_activation).lower().strip()
         if gt_agg == "mean":
             self.attention = SparseMeanAgg(
                 hidden_dim,
@@ -299,20 +360,12 @@ class GTLayer(nn.Module):
             self.bn2 = nn.BatchNorm1d(hidden_dim) if self.use_ffn else None
 
         if self.use_ffn:
-            if dropout and dropout > 0:
-                self.ffn = nn.Sequential(
-                    nn.Linear(hidden_dim, 2 * hidden_dim),
-                    nn.ReLU(),
-                    nn.Dropout(dropout),
-                    nn.Linear(2 * hidden_dim, hidden_dim),
-                )
-            else:
-                # Match legacy checkpoint key layout: ffn.0 / ffn.2
-                self.ffn = nn.Sequential(
-                    nn.Linear(hidden_dim, 2 * hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(2 * hidden_dim, hidden_dim),
-                )
+            self.ffn = _build_gt_ffn(
+                hidden_dim,
+                expansion=self.ffn_expansion,
+                activation=self.ffn_activation,
+                dropout=dropout,
+            )
         else:
             self.ffn = None
 
@@ -327,6 +380,16 @@ class GTLayer(nn.Module):
         return self.bn2(x)
 
     def forward(self, A, h):
+        if self.norm_placement == "pre":
+            h_attn = self._norm1(h)
+            h1 = self.attention(A, h_attn)
+            h = h + self.dropout(h1) if self.use_residual else self.dropout(h1)
+            if not self.use_ffn or self.ffn is None:
+                return h
+            h2 = self.ffn(self._norm2(h))
+            return h + self.dropout(h2) if self.use_residual else self.dropout(h2)
+
+        # post-norm (default / paper)
         h1 = self.attention(A, h)
         if self.use_residual:
             h = self._norm1(h + self.dropout(h1))
@@ -369,6 +432,9 @@ class GraphTransformer(nn.Module):
         use_ffn: bool = True,
         use_residual: bool = True,
         gt_agg: str = "attn",
+        ffn_expansion: float = 2.0,
+        ffn_activation: str = "relu",
+        norm_placement: str = "post",
     ):
         super().__init__()
         self.triple_fuse = triple_fuse
@@ -380,6 +446,9 @@ class GraphTransformer(nn.Module):
         self.use_ffn = bool(use_ffn)
         self.use_residual = bool(use_residual)
         self.gt_agg = str(gt_agg).lower().strip()
+        self.ffn_expansion = float(ffn_expansion)
+        self.ffn_activation = str(ffn_activation).lower().strip()
+        self.norm_placement = str(norm_placement).lower().strip()
         directed = gt_variant == "directed"
         aggregate = "dst" if directed else "src"
         use_edge_message = directed
@@ -413,6 +482,9 @@ class GraphTransformer(nn.Module):
                     use_ffn=self.use_ffn,
                     use_residual=self.use_residual,
                     gt_agg=self.gt_agg,
+                    ffn_expansion=self.ffn_expansion,
+                    ffn_activation=self.ffn_activation,
+                    norm_placement=self.norm_placement,
                 )
                 for _ in range(num_layers)
             ]

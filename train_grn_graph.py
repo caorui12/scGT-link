@@ -91,15 +91,21 @@ from utils import LinkPredictor  # noqa: E402
 
 from correlation_graph import build_correlation_graph  # noqa: E402
 from gold_network_graph import (  # noqa: E402
+    build_degree_preserving_rewire_graph,
     build_gold_network_graph,
     build_gold_pearson_graph,
+    build_random_prior_graph,
+    build_self_loop_graph,
     build_train_pos_union_corr_graph,
     build_train_positive_pearson_graph,
+    count_train_positive_directed_edges,
 )
 from grnboost2_graph import build_grnboost2_graph, resolve_tf_gene_names  # noqa: E402
 from grn_data import load_edge_split, load_expression_for_grn  # noqa: E402
 from grn_model import (  # noqa: E402
     GeneExpressionTransformer,
+    GeneIDEmbeddingEncoder,
+    LapPEOnlyEncoder,
     ScGPTExprConcatEncoder,
     ScGPTExprParallelEncoder,
     ScGPTExprTripleBranchEncoder,
@@ -162,6 +168,52 @@ def compute_structural_pe(g, k: int) -> torch.Tensor:
     if _STRUCTURAL_PE_COMPUTE is not None:
         return _STRUCTURAL_PE_COMPUTE(g, int(k))
     return dgl.lap_pe(g, k=int(k), padding=True)
+
+
+def compute_directed_identity_feats(g) -> torch.Tensor:
+    """AttentionGRN-style directed identity: log1p in/out degree + normalized degrees.
+
+    Returns ``(N, 4)`` float tensor on ``g``'s device.
+    """
+    n = int(g.num_nodes())
+    device = g.device
+    src, dst = g.edges()
+    in_deg = torch.zeros(n, device=device, dtype=torch.float32)
+    out_deg = torch.zeros(n, device=device, dtype=torch.float32)
+    ones = torch.ones(src.numel(), device=device, dtype=torch.float32)
+    in_deg.index_add_(0, dst.long(), ones)
+    out_deg.index_add_(0, src.long(), ones)
+    in_n = in_deg / in_deg.max().clamp_min(1.0)
+    out_n = out_deg / out_deg.max().clamp_min(1.0)
+    return torch.stack(
+        [torch.log1p(in_deg), torch.log1p(out_deg), in_n, out_n], dim=-1
+    )
+
+
+def _self_loop_prior_graph(g) -> "dgl.DGLGraph":
+    """Self-loops-only graph preserving node count (prior-drop student path)."""
+    n = int(g.num_nodes())
+    device = g.device
+    idx = torch.arange(n, device=device)
+    g_sl = dgl.graph((idx, idx), num_nodes=n, device=device)
+    if "w" in g.edata:
+        g_sl.edata["w"] = torch.ones(n, device=device, dtype=g.edata["w"].dtype)
+    if "dir" in g.edata:
+        g_sl.edata["dir"] = torch.zeros(n, device=device, dtype=g.edata["dir"].dtype)
+    return g_sl
+
+
+def _augment_pe_with_di(pe: torch.Tensor, g, enabled: bool) -> torch.Tensor:
+    if not enabled:
+        return pe
+    di = compute_directed_identity_feats(g).to(device=pe.device, dtype=pe.dtype)
+    # Project 4-d DI into pe width via a fixed orthonormal pad (no learnable params):
+    # write into the last min(4, k) columns after a light residual blend on the front.
+    k = pe.size(1)
+    m = min(4, k)
+    out = pe.clone()
+    out[:, :m] = out[:, :m] + di[:, :m]
+    return out
 
 
 # Registered datasets under ``data/``: expression folder + Train_validation_test split folder.
@@ -274,7 +326,16 @@ def parse_args(argv: Optional[list[str]] = None):
     p.add_argument(
         "--expr_encoder",
         type=str,
-        choices=("transformer", "scgpt", "scgpt_concat", "scgpt_parallel", "scgpt_triple"),
+        choices=(
+            "transformer",
+            "scgpt",
+            "scgpt_concat",
+            "scgpt_parallel",
+            "scgpt_triple",
+            "lappe",
+            "random_fixed",
+            "learnable",
+        ),
         default="scgpt",
         help="scGT-Link v2 default=scgpt: scGPT token emb + proj (+ optional refine) + LapPE; "
         "node features ignore gene_expr under scgpt (matrix still used for priors/LapPE). "
@@ -283,7 +344,10 @@ def parse_args(argv: Optional[list[str]] = None):
         "scgpt_parallel: GeneTransformerOnly (no Linear/LapPE on expr), parallel fuse "
         "expr + scGPT + LapPE at GraphTransformer input (GT-GRN style). "
         "scgpt_triple: expr Transformer (no LapPE inside), scGPT, LapPE as three branches; "
-        "concat-fuse before GT (no second LapPE at GT entry).",
+        "concat-fuse before GT (no second LapPE at GT entry). "
+        "lappe: LapPE only (w/o scGPT). "
+        "random_fixed: fixed Gaussian gene-ID table + proj + LapPE. "
+        "learnable: learnable gene-ID embedding + proj + LapPE.",
     )
     p.add_argument(
         "--d_model",
@@ -390,8 +454,12 @@ def parse_args(argv: Optional[list[str]] = None):
             "gold_pearson",
             "train_pos_pearson",
             "train_pos_uniform",
+            "train_pos_shuffled_w",
             "train_pos_union_corr",
             "grnboost2",
+            "self_loops",
+            "random",
+            "degree_rewire",
         ),
         default="train_pos_pearson",
         help="scGT-Link v2 default=train_pos_pearson (train-only positives + Pearson r; avoids gold leakage). "
@@ -400,9 +468,13 @@ def parse_args(argv: Optional[list[str]] = None):
         "gold_pearson: gold edges + Pearson r as weights (directed structure via edata['dir']). "
         "train_pos_pearson: only Train_set Label=1 edges + Pearson r. "
         "train_pos_uniform: same train-pos topology with w=1. "
+        "train_pos_shuffled_w: train-pos topology + permuted Pearson weights. "
         "train_pos_union_corr: union of train-pos edges and correlation edges "
         "(default recipe: --top_k 100 --corr_min_abs 0.1, i.e. |r|>=0.1 then top-k). "
-        "grnboost2: arboreto GRNBoost2 prior + top_k pruning (requires TF names).",
+        "grnboost2: arboreto GRNBoost2 prior + top_k pruning (requires TF names). "
+        "self_loops: no inter-gene edges (MLP-only / no message passing). "
+        "random: density-matched random directed prior. "
+        "degree_rewire: degree-preserving rewire of train-pos edges.",
     )
     p.add_argument(
         "--gold_network_file",
@@ -506,6 +578,11 @@ def parse_args(argv: Optional[list[str]] = None):
         "Prior graph structure for message passing is unchanged.",
     )
     p.add_argument(
+        "--shuffle_scgpt",
+        action="store_true",
+        help="Ablation: randomly permute scGPT gene-embedding rows (destroy gene identity, keep dim).",
+    )
+    p.add_argument(
         "--no_gt_ffn",
         action="store_true",
         help="Ablation: remove the position-wise FFN inside each GraphTransformer layer "
@@ -524,6 +601,53 @@ def parse_args(argv: Optional[list[str]] = None):
         default="attn",
         help="GraphTransformer neighbor mixing: attn=SparseMHA (default); "
         "mean=degree-normalized mean aggregation (attention ablation, still on the prior graph).",
+    )
+    p.add_argument(
+        "--gt_ffn_expansion",
+        type=float,
+        default=2.0,
+        help="GTLayer FFN inner width = expansion * gt_hidden_dim (default 2.0).",
+    )
+    p.add_argument(
+        "--gt_ffn_act",
+        type=str,
+        choices=("relu", "gelu", "swiglu"),
+        default="swiglu",
+        help="GTLayer FFN activation (default swiglu; relu is retained for historical baselines).",
+    )
+    p.add_argument(
+        "--gt_norm_placement",
+        type=str,
+        choices=("post", "pre"),
+        default="post",
+        help="GTLayer norm placement: post (paper default) or pre.",
+    )
+    p.add_argument(
+        "--aux_gene_emb_pt",
+        type=str,
+        default="",
+        help="Optional frozen gene emb .pt (GO / Geneformer / text) aligned to panel genes; "
+        "fused into ScGPTGeneExpressionEncoder when expr_encoder=scgpt.",
+    )
+    p.add_argument(
+        "--aux_gene_emb_mode",
+        type=str,
+        choices=("add", "concat"),
+        default="add",
+        help="How to fuse --aux_gene_emb_pt with scGPT tokens (default add).",
+    )
+    p.add_argument(
+        "--di_pe",
+        action="store_true",
+        help="Add directed-identity PE (in/out degree features) onto Laplacian PE "
+        "(AttentionGRN-style structure identity; train-safe, from prior graph only).",
+    )
+    p.add_argument(
+        "--prior_drop_p",
+        type=float,
+        default=0.0,
+        help="KINDLE-lite: during training, with this probability replace the prior graph "
+        "by self-loops-only for message passing (eval always uses full prior). 0=off.",
     )
     p.add_argument(
         "--test_prob_threshold",
@@ -617,6 +741,7 @@ def _make_ckpt_meta(
         "n_edges_graph": int(n_edges_graph),
         "use_edge_weight_attn": use_edge_w,
         "prior_graph": args.prior_graph,
+        "shuffle_scgpt": bool(getattr(args, "shuffle_scgpt", False)),
         "gold_network_file": str(Path(args.gold_network_file).resolve())
         if args.prior_graph in ("gold", "gold_pearson") and args.gold_network_file.strip()
         else "",
@@ -625,8 +750,15 @@ def _make_ckpt_meta(
             if args.prior_graph in ("gold", "gold_pearson")
             else (
                 "train_positive_indices"
-                if args.prior_graph == "train_pos_pearson"
-                else ""
+                if args.prior_graph
+                in (
+                    "train_pos_pearson",
+                    "train_pos_uniform",
+                    "train_pos_shuffled_w",
+                    "random",
+                    "degree_rewire",
+                )
+                else ("self_loops" if args.prior_graph == "self_loops" else "")
             )
         ),
         "use_directed_edge_attn": use_dir_attn,
@@ -635,6 +767,13 @@ def _make_ckpt_meta(
         "use_gt_ffn": not bool(getattr(args, "no_gt_ffn", False)),
         "use_gt_residual": not bool(getattr(args, "no_gt_residual", False)),
         "gt_agg": str(getattr(args, "gt_agg", "attn")),
+        "gt_ffn_expansion": float(getattr(args, "gt_ffn_expansion", 2.0) or 2.0),
+        "gt_ffn_act": str(getattr(args, "gt_ffn_act", "relu")),
+        "gt_norm_placement": str(getattr(args, "gt_norm_placement", "post")),
+        "aux_gene_emb_pt": str(getattr(args, "aux_gene_emb_pt", "") or ""),
+        "aux_gene_emb_mode": str(getattr(args, "aux_gene_emb_mode", "add")),
+        "di_pe": bool(getattr(args, "di_pe", False)),
+        "prior_drop_p": float(getattr(args, "prior_drop_p", 0.0) or 0.0),
         "nhead": args.nhead,
         "num_layers": args.num_layers,
         "dim_feedforward": args.dim_feedforward,
@@ -1199,6 +1338,7 @@ def run_training(args: Namespace) -> dict:
                 train_y.detach().cpu(),
                 expr_cpu,
                 edge_weight="pearson",
+                seed=args.seed,
             )
         except (ValueError, RuntimeError) as e:
             raise SystemExit(str(e)) from e
@@ -1209,6 +1349,18 @@ def run_training(args: Namespace) -> dict:
                 train_y.detach().cpu(),
                 expr_cpu,
                 edge_weight="ones",
+                seed=args.seed,
+            )
+        except (ValueError, RuntimeError) as e:
+            raise SystemExit(str(e)) from e
+    elif args.prior_graph == "train_pos_shuffled_w":
+        try:
+            g = build_train_positive_pearson_graph(
+                train_ei.detach().cpu(),
+                train_y.detach().cpu(),
+                expr_cpu,
+                edge_weight="shuffled_pearson",
+                seed=args.seed,
             )
         except (ValueError, RuntimeError) as e:
             raise SystemExit(str(e)) from e
@@ -1244,14 +1396,46 @@ def run_training(args: Namespace) -> dict:
             )
         except (ImportError, FileNotFoundError, ValueError) as e:
             raise SystemExit(str(e)) from e
+    elif args.prior_graph == "self_loops":
+        g = build_self_loop_graph(n_genes)
+    elif args.prior_graph == "random":
+        n_dir = count_train_positive_directed_edges(
+            train_ei.detach().cpu(), train_y.detach().cpu()
+        )
+        if n_dir < 1:
+            raise SystemExit("prior_graph=random: no positive train edges to match density.")
+        g = build_random_prior_graph(n_genes, n_dir, seed=args.seed)
+    elif args.prior_graph == "degree_rewire":
+        try:
+            g = build_degree_preserving_rewire_graph(
+                train_ei.detach().cpu(),
+                train_y.detach().cpu(),
+                n_genes,
+                seed=args.seed,
+            )
+        except (ValueError, RuntimeError) as e:
+            raise SystemExit(str(e)) from e
     else:
         raise SystemExit(f"Unknown prior_graph={args.prior_graph!r}")
     g = g.to(device)
+    prior_drop_p = float(getattr(args, "prior_drop_p", 0.0) or 0.0)
+    g_student = _self_loop_prior_graph(g) if prior_drop_p > 0 else None
     with torch.no_grad():
-        pe = compute_structural_pe(g, in_dim)
-    pe = pe.to(device=device, dtype=gene_expr.dtype)
-    if args.no_lappe:
-        pe = torch.zeros_like(pe)
+        if bool(args.no_lappe) or args.prior_graph == "self_loops":
+            # Self-loop-only graphs have a degenerate Laplacian; skip ARPACK.
+            pe = torch.zeros((n_genes, in_dim), device=device, dtype=gene_expr.dtype)
+        else:
+            pe = compute_structural_pe(g, in_dim)
+            pe = pe.to(device=device, dtype=gene_expr.dtype)
+            if args.no_lappe:
+                pe = torch.zeros_like(pe)
+    pe = _augment_pe_with_di(pe, g, bool(getattr(args, "di_pe", False)))
+
+    aux_mat = None
+    aux_pt = str(getattr(args, "aux_gene_emb_pt", "") or "").strip()
+    if aux_pt:
+        aux_mat, _ = load_scgpt_emb_from_pt(Path(aux_pt), gene_names)
+        aux_mat = aux_mat.to(device=device)
 
     scgpt_dim: Optional[int] = None
     if args.expr_encoder in ("scgpt", "scgpt_concat", "scgpt_parallel", "scgpt_triple"):
@@ -1271,7 +1455,14 @@ def run_training(args: Namespace) -> dict:
                 device=torch.device("cpu"),
             )
         scgpt_mat = scgpt_mat_cpu.to(device=device)
+        if bool(getattr(args, "shuffle_scgpt", False)):
+            gen = torch.Generator(device="cpu")
+            gen.manual_seed(int(args.seed))
+            perm = torch.randperm(scgpt_mat.size(0), generator=gen)
+            scgpt_mat = scgpt_mat[perm.to(device=scgpt_mat.device)].contiguous()
         if args.expr_encoder == "scgpt_parallel":
+            if aux_mat is not None:
+                raise SystemExit("--aux_gene_emb_pt currently supports expr_encoder=scgpt only")
             seq_model = ScGPTExprParallelEncoder(
                 scgpt_mat,
                 n_cells=n_cells,
@@ -1282,6 +1473,8 @@ def run_training(args: Namespace) -> dict:
                 dropout=args.dropout,
             ).to(device)
         elif args.expr_encoder == "scgpt_concat":
+            if aux_mat is not None:
+                raise SystemExit("--aux_gene_emb_pt currently supports expr_encoder=scgpt only")
             seq_model = ScGPTExprConcatEncoder(
                 scgpt_mat,
                 n_cells=n_cells,
@@ -1292,6 +1485,8 @@ def run_training(args: Namespace) -> dict:
                 dropout=args.dropout,
             ).to(device)
         elif args.expr_encoder == "scgpt_triple":
+            if aux_mat is not None:
+                raise SystemExit("--aux_gene_emb_pt currently supports expr_encoder=scgpt only")
             seq_model = ScGPTExprTripleBranchEncoder(
                 scgpt_mat,
                 n_cells=n_cells,
@@ -1310,8 +1505,33 @@ def run_training(args: Namespace) -> dict:
                 refine_nhead=args.scgpt_refine_nhead,
                 dim_feedforward=args.scgpt_refine_dim_feedforward,
                 dropout=args.dropout,
+                aux_gene_emb=aux_mat,
+                aux_mode=str(getattr(args, "aux_gene_emb_mode", "add")),
             ).to(device)
+    elif args.expr_encoder == "lappe":
+        if aux_mat is not None:
+            raise SystemExit("--aux_gene_emb_pt currently supports expr_encoder=scgpt only")
+        seq_model = LapPEOnlyEncoder(d_model=in_dim).to(device)
+    elif args.expr_encoder in ("random_fixed", "learnable"):
+        if aux_mat is not None:
+            raise SystemExit("--aux_gene_emb_pt currently supports expr_encoder=scgpt only")
+        emb_dim = 512
+        if args.scgpt_emb_pt.strip():
+            try:
+                _, emb_dim = load_scgpt_emb_from_pt(Path(args.scgpt_emb_pt.strip()), gene_names)
+            except Exception:
+                emb_dim = 512
+        seq_model = GeneIDEmbeddingEncoder(
+            n_genes=n_genes,
+            emb_dim=int(emb_dim),
+            d_model=in_dim,
+            learnable=(args.expr_encoder == "learnable"),
+            seed=args.seed,
+        ).to(device)
+        scgpt_dim = int(emb_dim)
     else:
+        if aux_mat is not None:
+            raise SystemExit("--aux_gene_emb_pt currently supports expr_encoder=scgpt only")
         seq_model = GeneExpressionTransformer(
             n_cells=n_cells,
             d_model=in_dim,
@@ -1328,8 +1548,11 @@ def run_training(args: Namespace) -> dict:
             "gold_pearson",
             "train_pos_pearson",
             "train_pos_uniform",
+            "train_pos_shuffled_w",
             "train_pos_union_corr",
             "grnboost2",
+            "random",
+            "degree_rewire",
         )
         and not args.no_edge_dir_attn
     )
@@ -1353,6 +1576,9 @@ def run_training(args: Namespace) -> dict:
         use_ffn=not bool(getattr(args, "no_gt_ffn", False)),
         use_residual=not bool(getattr(args, "no_gt_residual", False)),
         gt_agg=str(getattr(args, "gt_agg", "attn")),
+        ffn_expansion=float(getattr(args, "gt_ffn_expansion", 2.0) or 2.0),
+        ffn_activation=str(getattr(args, "gt_ffn_act", "relu")),
+        norm_placement=str(getattr(args, "gt_norm_placement", "post")),
     ).to(device)
     predictor = _link_predictor_from_meta_or_args({}, args).to(device)
 
@@ -1503,8 +1729,15 @@ def run_training(args: Namespace) -> dict:
             ei = train_ei[:, sel]
             y = train_y[sel]
             opt.zero_grad()
+            g_fwd = g
+            if (
+                g_student is not None
+                and prior_drop_p > 0
+                and float(torch.rand((), device=device)) < prior_drop_p
+            ):
+                g_fwd = g_student
             h = _graph_transformer_hidden(
-                seq_model, gt_model, gene_expr, g, pe, triple_fuse=triple_fuse
+                seq_model, gt_model, gene_expr, g_fwd, pe, triple_fuse=triple_fuse
             )
             logits = predictor(h, ei).squeeze(-1)
             loss = loss_fn(logits, y)
@@ -1645,11 +1878,15 @@ def run_training(args: Namespace) -> dict:
             meta.get("use_gt_residual", not bool(getattr(args, "no_gt_residual", False)))
         ),
         gt_agg=str(meta.get("gt_agg", getattr(args, "gt_agg", "attn"))),
+        ffn_expansion=float(meta.get("gt_ffn_expansion", getattr(args, "gt_ffn_expansion", 2.0)) or 2.0),
+        ffn_activation=str(meta.get("gt_ffn_act", getattr(args, "gt_ffn_act", "relu"))),
+        norm_placement=str(meta.get("gt_norm_placement", getattr(args, "gt_norm_placement", "post"))),
     ).to(device)
     sd_seq = ckpt["seq_model"]
     if expr_enc_saved == "scgpt":
         if "scgpt_gene_emb" not in sd_seq:
             raise SystemExit("checkpoint meta says expr_encoder=scgpt but seq_model has no scgpt_gene_emb buffer")
+        aux_ck = sd_seq.get("aux_gene_emb")
         seq_model = ScGPTGeneExpressionEncoder(
             sd_seq["scgpt_gene_emb"].cpu(),
             d_model=int(meta.get("d_model", in_dim)),
@@ -1657,6 +1894,8 @@ def run_training(args: Namespace) -> dict:
             refine_nhead=int(meta.get("scgpt_refine_nhead", 4)),
             dim_feedforward=int(meta.get("scgpt_refine_dim_feedforward", 256)),
             dropout=float(args.dropout),
+            aux_gene_emb=aux_ck.cpu() if isinstance(aux_ck, torch.Tensor) else None,
+            aux_mode=str(meta.get("aux_gene_emb_mode", getattr(args, "aux_gene_emb_mode", "add"))),
         ).to(device)
         seq_model.load_state_dict(sd_seq)
     elif expr_enc_saved == "scgpt_concat":
@@ -1703,6 +1942,20 @@ def run_training(args: Namespace) -> dict:
             num_layers=int(meta.get("num_layers", args.num_layers)),
             dim_feedforward=int(meta.get("dim_feedforward", args.dim_feedforward)),
             dropout=float(args.dropout),
+        ).to(device)
+        seq_model.load_state_dict(sd_seq)
+    elif expr_enc_saved == "lappe":
+        seq_model = LapPEOnlyEncoder(d_model=int(meta.get("d_model", in_dim))).to(device)
+        seq_model.load_state_dict(sd_seq)
+    elif expr_enc_saved in ("random_fixed", "learnable"):
+        emb_dim = int(meta.get("scgpt_dim") or 512)
+        n_g = int(meta.get("n_genes", n_genes))
+        seq_model = GeneIDEmbeddingEncoder(
+            n_genes=n_g,
+            emb_dim=emb_dim,
+            d_model=int(meta.get("d_model", in_dim)),
+            learnable=(expr_enc_saved == "learnable"),
+            seed=int(meta.get("seed", getattr(args, "seed", 42)) or 42),
         ).to(device)
         seq_model.load_state_dict(sd_seq)
     else:

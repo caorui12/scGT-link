@@ -237,6 +237,7 @@ def build_train_positive_pearson_graph(
     *,
     add_self_loops: bool = True,
     edge_weight: str = "pearson",
+    seed: int = 42,
 ) -> dgl.DGLGraph:
     """
     Prior graph edges = **only** ``Train_set`` rows with Label==1 (directed TF→target indices).
@@ -247,14 +248,18 @@ def build_train_positive_pearson_graph(
         :func:`_triples_to_dgl`). Duplicate directed pairs keep the larger ``r``.
       - ``ones``: same train-positive topology, but every edge weight is 1.0
         (ablation: structure without Pearson magnitude).
+      - ``shuffled_pearson``: same topology as ``pearson``, but Pearson magnitudes are
+        randomly permuted across directed edges (expression values destroyed; topology kept).
 
     ``train_edge_index``: long ``(2, E)`` with gene row indices (same convention as split CSVs).
-    ``expr``: ``(G, C)`` genes × cells (still required for ``pearson``; unused for ``ones``
-    except to size the graph).
+    ``expr``: ``(G, C)`` genes × cells (still required for ``pearson`` / ``shuffled_pearson``;
+    unused for ``ones`` except to size the graph).
     """
     edge_weight = str(edge_weight).lower().strip()
-    if edge_weight not in ("pearson", "ones"):
-        raise ValueError(f"edge_weight must be 'pearson' or 'ones', got {edge_weight!r}")
+    if edge_weight not in ("pearson", "ones", "shuffled_pearson"):
+        raise ValueError(
+            f"edge_weight must be 'pearson', 'ones', or 'shuffled_pearson', got {edge_weight!r}"
+        )
 
     ei = train_edge_index.detach().long().cpu()
     y = train_labels.detach().float().cpu().view(-1)
@@ -298,6 +303,12 @@ def build_train_positive_pearson_graph(
         )
 
     triples = [(i, j, w) for (i, j), w in best_r.items()]
+    if edge_weight == "shuffled_pearson":
+        # Keep train-pos topology; permute Pearson magnitudes across edges.
+        weights = np.array([t[2] for t in triples], dtype=np.float64)
+        rng = np.random.default_rng(int(seed))
+        rng.shuffle(weights)
+        triples = [(t[0], t[1], float(w)) for t, w in zip(triples, weights.tolist())]
     return _triples_to_dgl(triples, g_n, add_self_loops=add_self_loops)
 
 
@@ -440,3 +451,72 @@ def count_train_positive_directed_edges(
     dst = ei[1, pos]
     pairs = {(int(a), int(b)) for a, b in zip(src.tolist(), dst.tolist()) if int(a) != int(b)}
     return len(pairs)
+
+
+def _unique_train_pos_pairs(
+    train_edge_index: torch.Tensor,
+    train_labels: torch.Tensor,
+) -> List[Tuple[int, int]]:
+    ei = train_edge_index.detach().long().cpu()
+    y = train_labels.detach().float().cpu().view(-1)
+    pos = y > 0.5
+    pairs = {
+        (int(a), int(b))
+        for a, b in zip(ei[0, pos].tolist(), ei[1, pos].tolist())
+        if int(a) != int(b)
+    }
+    return sorted(pairs)
+
+
+def build_degree_preserving_rewire_graph(
+    train_edge_index: torch.Tensor,
+    train_labels: torch.Tensor,
+    n_genes: int,
+    *,
+    seed: int = 42,
+    add_self_loops: bool = True,
+    max_tries: int = 200,
+) -> dgl.DGLGraph:
+    """
+    Directed configuration-model rewire of train-positive edges.
+
+    Preserves in- and out-degree of each gene relative to the unique directed
+    Train_set Label=1 graph, but redraws endpoints (no biological edge identity).
+    Edge weights are 1.0. Used as a stronger prior-topology control than density-matched
+    ``build_random_prior_graph``.
+    """
+    g_n = int(n_genes)
+    pairs = _unique_train_pos_pairs(train_edge_index, train_labels)
+    if not pairs:
+        raise RuntimeError("degree_rewire: no positive directed train edges.")
+    if g_n < 2:
+        raise ValueError("Need at least 2 genes for degree-preserving rewire.")
+
+    out_stubs = [i for i, _ in pairs]
+    in_stubs = [j for _, j in pairs]
+    rng = np.random.default_rng(int(seed))
+    n_e = len(pairs)
+
+    rewired: List[Tuple[int, int, float]] | None = None
+    for _ in range(int(max_tries)):
+        rng.shuffle(in_stubs)
+        cand: dict[Tuple[int, int], float] = {}
+        ok = True
+        for i, j in zip(out_stubs, in_stubs):
+            if i == j:
+                ok = False
+                break
+            if (i, j) in cand:
+                ok = False
+                break
+            cand[(i, j)] = 1.0
+        if ok and len(cand) == n_e:
+            rewired = [(i, j, 1.0) for (i, j) in cand.keys()]
+            break
+
+    if rewired is None:
+        # Fallback: random unique edges with same count (still density-matched).
+        return build_random_prior_graph(
+            g_n, n_e, seed=int(seed), add_self_loops=add_self_loops
+        )
+    return _triples_to_dgl(rewired, g_n, add_self_loops=add_self_loops)

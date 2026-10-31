@@ -26,15 +26,28 @@ def _pick_model_file(model_dir: Path) -> Path:
     )
 
 
+def _vocab_lookup(vocab, g: str) -> Optional[int]:
+    if g in vocab:
+        return int(vocab[g])
+    if g.upper() in vocab:
+        return int(vocab[g.upper()])
+    if g.lower() in vocab:
+        return int(vocab[g.lower()])
+    return None
+
+
 def load_scgpt_gene_embedding_matrix(
     model_dir: str | Path,
     gene_names: list[str],
     device: torch.device,
+    ortholog_map: Optional[dict[str, str]] = None,
 ) -> tuple[torch.Tensor, int]:
     """
     Return ``(G, embsize)`` gene token embeddings from the pretrained scGPT ``GeneEncoder``.
 
     Genes missing from the vocabulary use the padding row.
+    If ``ortholog_map`` is provided (e.g. mouse symbol → human symbol via HomoloGene),
+    unmatched genes are remapped before falling back to pad.
     """
     try:
         try:
@@ -90,15 +103,14 @@ def load_scgpt_gene_embedding_matrix(
     encoder = encoder.to(device)
     encoder.eval()
 
+    omap = ortholog_map or {}
     ids: list[int] = []
     for g in gene_names:
-        gid: Optional[int] = None
-        if g in vocab:
-            gid = vocab[g]
-        elif g.upper() in vocab:
-            gid = vocab[g.upper()]
-        elif g.lower() in vocab:
-            gid = vocab[g.lower()]
+        gid = _vocab_lookup(vocab, g)
+        if gid is None and omap:
+            human = omap.get(g) or omap.get(str(g).upper()) or omap.get(str(g).lower())
+            if human:
+                gid = _vocab_lookup(vocab, str(human))
         ids.append(int(gid if gid is not None else pad_id))
 
     id_t = torch.tensor(ids, dtype=torch.long, device=device)

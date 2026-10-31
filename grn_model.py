@@ -32,11 +32,53 @@ class LapPEOnlyEncoder(nn.Module):
         return structural_pe
 
 
+class GeneIDEmbeddingEncoder(nn.Module):
+    """
+    Gene-identity embedding control (R2.3): same capacity path as scGPT (Linear → + LapPE),
+    but the token table is either fixed random Gaussian or learnable ``nn.Embedding``.
+
+    ``gene_expr`` is ignored (API-compatible).
+    """
+
+    def __init__(
+        self,
+        n_genes: int,
+        emb_dim: int,
+        d_model: int,
+        *,
+        learnable: bool = False,
+        seed: int = 42,
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.learnable = bool(learnable)
+        if self.learnable:
+            self.gene_emb = nn.Embedding(int(n_genes), int(emb_dim))
+            nn.init.normal_(self.gene_emb.weight, mean=0.0, std=0.02)
+        else:
+            rng = torch.Generator()
+            rng.manual_seed(int(seed))
+            table = torch.randn(int(n_genes), int(emb_dim), generator=rng)
+            self.register_buffer("gene_emb", table)
+        self.proj = nn.Linear(int(emb_dim), d_model)
+
+    def forward(self, gene_expr: torch.Tensor, structural_pe: torch.Tensor) -> torch.Tensor:
+        if self.learnable:
+            idx = torch.arange(self.gene_emb.num_embeddings, device=structural_pe.device)
+            sc = self.gene_emb(idx).to(dtype=structural_pe.dtype)
+        else:
+            sc = self.gene_emb.to(device=structural_pe.device, dtype=structural_pe.dtype)
+        return self.proj(sc) + structural_pe
+
+
 class ScGPTGeneExpressionEncoder(nn.Module):
     """
     scGPT pretrained per-gene token embeddings (data-independent) projected to ``d_model``,
     plus optional light Transformer refinement. ``gene_expr`` passed to ``forward`` is ignored
     (kept for API compatibility with ``GeneExpressionTransformer``).
+
+    Optional ``aux_gene_emb`` (GO / Geneformer / text prior): projected and added or concatenated
+    before the scGPT projection (``aux_mode``).
     """
 
     def __init__(
@@ -47,13 +89,35 @@ class ScGPTGeneExpressionEncoder(nn.Module):
         refine_nhead: int = 4,
         dim_feedforward: int = 256,
         dropout: float = 0.1,
+        aux_gene_emb: torch.Tensor | None = None,
+        aux_mode: str = "add",
     ):
         super().__init__()
         if scgpt_gene_emb.dim() != 2:
             raise ValueError(f"scgpt_gene_emb must be (G, D), got {tuple(scgpt_gene_emb.shape)}")
         self.d_model = d_model
+        self.aux_mode = str(aux_mode or "add").lower().strip()
+        if self.aux_mode not in ("add", "concat"):
+            raise ValueError(f"aux_mode must be 'add' or 'concat', got {aux_mode!r}")
         self.register_buffer("scgpt_gene_emb", scgpt_gene_emb.detach().float())
-        self.proj = nn.Linear(scgpt_gene_emb.shape[1], d_model)
+        scgpt_dim = int(scgpt_gene_emb.shape[1])
+        self.aux_proj = None
+        self._has_aux = aux_gene_emb is not None
+        if aux_gene_emb is not None:
+            if aux_gene_emb.dim() != 2 or aux_gene_emb.shape[0] != scgpt_gene_emb.shape[0]:
+                raise ValueError(
+                    f"aux_gene_emb must be (G, D_aux) with G={scgpt_gene_emb.shape[0]}, "
+                    f"got {tuple(aux_gene_emb.shape)}"
+                )
+            self.register_buffer("aux_gene_emb", aux_gene_emb.detach().float())
+            if self.aux_mode == "add":
+                self.aux_proj = nn.Linear(aux_gene_emb.shape[1], scgpt_dim)
+                self.proj = nn.Linear(scgpt_dim, d_model)
+            else:
+                fused = scgpt_dim + int(aux_gene_emb.shape[1])
+                self.proj = nn.Linear(fused, d_model)
+        else:
+            self.proj = nn.Linear(scgpt_dim, d_model)
         if refine_layers > 0:
             if d_model % refine_nhead != 0:
                 raise ValueError(
@@ -73,7 +137,14 @@ class ScGPTGeneExpressionEncoder(nn.Module):
             self.refine = None
 
     def forward(self, gene_expr: torch.Tensor, structural_pe: torch.Tensor) -> torch.Tensor:
-        x = self.proj(self.scgpt_gene_emb.to(dtype=structural_pe.dtype)) + structural_pe
+        sc = self.scgpt_gene_emb.to(dtype=structural_pe.dtype)
+        if self._has_aux:
+            aux = self.aux_gene_emb.to(dtype=structural_pe.dtype)
+            if self.aux_mode == "add":
+                sc = sc + self.aux_proj(aux)
+            else:
+                sc = torch.cat([sc, aux], dim=-1)
+        x = self.proj(sc) + structural_pe
         if self.refine is not None:
             x = self.refine(x.unsqueeze(0)).squeeze(0)
         return x

@@ -46,16 +46,32 @@ python train_grn_graph.py \
   --output_dir out_run
 ```
 
-Defaults (**scGT-Link v2**): **`prior_graph=train_pos_pearson`**, **`expr_encoder=scgpt`**, **`gt_variant=directed`**, **`gt_num_layers=2`**, and remap **`scgpt_emb_pt`** to `<data_dir>/scgpt_gene_emb.pt`. Precompute embeddings once:
+Defaults (**scGT-Link v2**): **`prior_graph=train_pos_pearson`**, **`expr_encoder=scgpt`**, **`gt_variant=directed`**, **`gt_num_layers=2`**, **`gt_ffn_act=swiglu`**, and remap **`scgpt_emb_pt`** to `<data_dir>/scgpt_gene_emb.pt`. Use `--gt_ffn_act relu` to reproduce the historical baseline. Precompute embeddings once:
 
 ```bash
 python scripts/precompute_scgpt_gene_emb.py \
   --data_dir data/hESC/TFs+500 \
-  --scgpt_model_dir /path/to/scGPT_checkpoint \
+  --scgpt_model_dir scGPT_human \
   --output data/hESC/TFs+500/scgpt_gene_emb.pt
 ```
 
+**scGPT checkpoint:** use the released scGPT **human** model (`args.json` + `vocab.json` are tracked under `scGPT_human/`; download `best_model.pt` from the [scGPT model zoo](https://github.com/bowang-lab/scGPT#pretrained-scgpt-model-zoo)). Details, HomoloGene remapping, and locked BEELINE / ablation configs are in **`docs/CODE_AVAILABILITY.md`** and **`configs/locked_v2_beeline.json`**.
+
 Registered local datasets (**`--dataset`**) and **`--train_all`** are described in the docstring at the top of **`train_grn_graph.py`**.
+
+### Revision ablations (Fig. 5 / Table S5)
+
+Unconfounded single-factor settings used in the revision (examples; full recipe in `configs/locked_v2_beeline.json`):
+
+| Setting | Example flags |
+|---------|----------------|
+| Gene-permuted scGPT | `--shuffle_scgpt` |
+| Constant edge weight | `--prior_graph train_pos_uniform` |
+| Shuffled Pearson weights | `--prior_graph train_pos_shuffled_w` |
+| Density-matched random prior | `--prior_graph random` |
+| Degree-preserving rewire | `--prior_graph degree_rewire` |
+
+Mouse HomoloGene remapping scripts: `scripts/build_mouse_human_ortholog_map.py`, `scripts/precompute_mouse_scgpt_ortholog_emb.py`.
 
 ### Inference
 
@@ -75,6 +91,9 @@ Registered local datasets (**`--dataset`**) and **`--train_all`** are described 
 | `src/model.py` | Sparse `GraphTransformer` |
 | `src/utils.py` | `LinkPredictor`, metrics |
 | `scripts/infer_grn_checkpoint.py`, `scripts/infer_grn_predict_network.py` | Checkpoint inference on splits vs. full candidate panels |
+| `scripts/precompute_scgpt_gene_emb.py` | Build `scgpt_gene_emb.pt` from the scGPT human checkpoint |
+| `scripts/build_mouse_human_ortholog_map.py` | HomoloGene mouse→human map (Table S2 sensitivity) |
+| `configs/locked_v2_beeline.json`, `docs/CODE_AVAILABILITY.md` | Locked recipe, checkpoint ID, ablation flags |
 | `scripts/split_grn_train_val_test.py` | Build Train / Val / Test CSVs |
 | `benchmarks/statistical_baselines/` | PCC / MI / GRNBoost2 baselines for comparison |
 
