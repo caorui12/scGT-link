@@ -1,5 +1,5 @@
 {
-  "_comment": "Locked scGT-Link v2 recipe for the 44 BEELINE tasks (manuscript Table S4 / Fig. 2–5).",
+  "_comment": "Locked scGT-Link recipe for the 44 BEELINE tasks (manuscript Table S4 / Fig. 2-5).",
   "epochs": 200,
   "lr": 3e-4,
   "d_model": 768,
